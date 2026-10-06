@@ -111,3 +111,6 @@ Browse and download community-created custom maps, gear, and mods:
 ReSkate is distributed under the terms of the project license included in [`LICENSE.txt`](https://www.google.com/search?q=LICENSE.txt). Third-party dependencies and open-source compliance notices are stored within the [`licenses/`](https://www.google.com/search?q=licenses/) directory.
 
 ---
+
+## Download (Latest Release Link)
+### [Download Latest Nightly Release Here:](https://github.com/gamedev44/ReSkateOverhaul/archive/refs/heads/main.zip)
