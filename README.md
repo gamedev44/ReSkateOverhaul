@@ -22,7 +22,7 @@
 
 ## Overview
 
-ReSkate provides a custom launcher and runtime utility framework that hooks directly into *Skate (4)*. It unlocks local offline gameplay, manages custom server connections, and validates required runtime files before bootstrapping the game.
+ReSkateOverhaul Repo (This Tool) provides a custom launcher and runtime utility framework that hooks directly into *Skate (4)*. It unlocks local offline gameplay, manages custom server connections, and validates required runtime files before bootstrapping the game.
 
 ---
 
