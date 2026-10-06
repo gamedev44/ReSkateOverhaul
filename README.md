@@ -98,6 +98,11 @@ The default configuration template manages execution flags, offline options, and
 }
 
 ```
+---
+## Mods (Maps, Scripts, Etc...)
+
+Browse and download community-created custom maps, gear, and mods:
+- [Compatable ReSkate / Skate. Mod Database](https://thunderstore.io/c/reskate/)
 
 ---
 
