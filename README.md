@@ -4,6 +4,22 @@
 
 ---
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Directory Structure](#directory-structure)
+- [Quick Start](#quick-start)
+  - [1. Locate Your Skate (4) Installation Directory](#1-locate-your-skate-4-installation-directory)
+  - [2. Installation & Verification](#2-installation--verification)
+  - [3. Launch](#3-launch)
+- [Configuration (`Launcher.json`)](#configuration-launcherjson)
+- [Mods (Maps, Scripts, Etc...)](#mods-maps-scripts-etc)
+- [License & Third-Party Dependencies](#license--third-party-dependencies)
+- [Download (Latest Release Link)](#download-latest-release-link)
+
+---
+
 ## Overview
 
 ReSkate provides a custom launcher and runtime utility framework that hooks directly into *Skate (4)*. It unlocks local offline gameplay, manages custom server connections, and validates required runtime files before bootstrapping the game.
@@ -38,7 +54,7 @@ All ReSkate assets must be extracted into your main *Skate* root installation fo
 
 ## Quick Start
 
-### 1. Locate Your *Skate (4)* Installation Directory
+### 1. Locate Your Skate (4) Installation Directory
 
 **In Steam:**
 
@@ -98,11 +114,14 @@ The default configuration template manages execution flags, offline options, and
 }
 
 ```
+
 ---
+
 ## Mods (Maps, Scripts, Etc...)
 
 Browse and download community-created custom maps, gear, and mods:
-- [Compatable ReSkate / Skate. Mod Database](https://thunderstore.io/c/reskate/)
+
+* [Compatable ReSkate / Skate. Mod Database](https://thunderstore.io/c/reskate/)
 
 ---
 
@@ -113,4 +132,7 @@ ReSkate is distributed under the terms of the project license included in [`LICE
 ---
 
 ## Download (Latest Release Link)
+
 ### [Click Here to Download The Latest Nightly Release](https://github.com/gamedev44/ReSkateOverhaul/archive/refs/heads/main.zip)
+
+```
