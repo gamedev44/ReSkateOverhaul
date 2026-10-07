@@ -127,9 +127,9 @@ The zip includes `ReSkate.exe`. The release page is [ReSkate launcher](https://g
 * [@moelrobi](https://www.google.com/search?q=https://github.com/moelrobi)
 * [@Vebjorhk](https://www.google.com/search?q=https://github.com/Vebjorhk)
 * [@wishluna](https://www.google.com/search?q=https://github.com/wishluna)
-
+* [@Wambo/EmporerTechno](https://www.google.com/search?q=https://github.com/Emperortechno)
 ---
 
-> A heartfelt thank you to everyone listed above. Every single line of code, fix, and contribution—big or small—made this project possible and necessary. Your time, energy, and work are deeply appreciated!
+> A heartfelt thank you to everyone listed above. Every single line of code, fix, and nightly tests performed by wambo and amongst other contributions whether—big or small—made this project possible and necessary. Your time, energy, and work are deeply appreciated!
 
 ---
