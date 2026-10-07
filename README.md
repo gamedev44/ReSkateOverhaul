@@ -10,9 +10,6 @@
 - [Key Features](#key-features)
 - [Directory Structure](#directory-structure)
 - [Quick Start](#quick-start)
-  - [1. Locate Your Skate (4) Installation Directory](#1-locate-your-skate-4-installation-directory)
-  - [2. Installation & Verification](#2-installation--verification)
-  - [3. Launch](#3-launch)
 - [Configuration (`Launcher.json`)](#configuration-launcherjson)
 - [Mods (Maps, Scripts, Etc...)](#mods-maps-scripts-etc)
 - [License & Third-Party Dependencies](#license--third-party-dependencies)
@@ -37,63 +34,34 @@ ReSkateOverhaul Repo (This Tool) provides a custom launcher and runtime utility 
 
 ---
 
-## Directory Structure
-
-All ReSkate assets must be extracted into your main *Skate* root installation folder (where `skate.exe` resides). Ensure the following structure exists prior to launching:
+## Project Structure
 
 ```text
-├── ReSkateLauncher.exe  # Main client bootstrapper
-├── ReSkate.dll          # Core runtime & mod hook library
-├── Launcher.json        # Client configuration & launch parameters
-├── LICENSE.txt          # Primary license document
-└── licenses/            # Directory containing third-party OSS notices
-
+ReSkate.bat
+Assets/Logos/          # reskate.png, skate.png, skate-element.png
+Assets/Backgrounds/    # window.jpg, mods.jpg, reskate-card.jpg, skate-card.jpg
+Source/Launch/         # Pre-launch card window
+Source/Setup/          # Install, update, and mode switch
+Source/Mods/           # Thunderstore catalog and mod install
 ```
+
+After install, the game folder beside `Skate.exe` contains `ReSkateLauncher.exe`, `ReSkate.dll`, `Launcher.json`, `LICENSE.txt`, and `licenses\`. Community mods go in `Mods\`.
 
 ---
 
 ## Quick Start
 
-### 1. Locate Your Skate (4) Installation Directory
+Double-click `ReSkate.bat`. The startup screen shows two cards. Wordmarks are in `Assets\Logos` and the card and window photos are in `Assets\Backgrounds`. The ReSkate card and the Skate card each switch the parked files, then start that game. Update, Mods, and Check sit under the cards.
 
-**In Steam:**
+Update installs the latest release. Auto-update on the card screen checks that release in the background. Mods opens on Recommended: Skate 2, Skate 3, Skater XL, Other, Maps, and Audio. Browse lists the ReSkate catalog for Mods or Modpacks, ordered last updated, newest, most downloaded, or top rated. A search keeps that filter and puts your words in the query. A checked package is extracted into its own folder, `Mods\<Author-Name>`, beside `Skate.exe`. Back returns to the game cards. Profiles saves that Mods folder into `Profiles\<name>`. Auto-update on the mods screen replaces an installed package when Thunderstore has a newer version. Enable the mod in the in-game ReSkate MODS menu.
 
-1. Right-click **Skate** in your Steam Library.
-2. Hover over **Manage** and click **Browse local files**.
-3. Copy the full folder path from the address bar.
+Skate is resolved at:
 
-### 2. Installation & Verification
-
-1. Extract the release contents directly into your *Skate* directory.
-2. Verify that all required files and the `licenses/` directory are present using PowerShell:
-
-```powershell
-# PowerShell Quick Validation
-$ExpectedFiles = @(
-    "ReSkateLauncher.exe",
-    "ReSkate.dll",
-    "Launcher.json",
-    "LICENSE.txt",
-    "licenses"
-)
-
-$missing = $ExpectedFiles | Where-Object { -not (Test-Path -Path ".\$_") }
-if ($missing) {
-    Write-Warning "Missing required items: $($missing -join ', ')"
-} else {
-    Write-Host "ReSkate environment valid." -ForegroundColor Green
-}
-
+```text
+<drive>:\Steam\steamapps\common\Skate
 ```
 
-### 3. Launch
-
-Start the game via the custom launcher:
-
-```powershell
-.\ReSkateLauncher.exe
-
-```
+The card screen fills that path when `Skate.exe` is there. `ReSkate.bat D` limits the search to drive D. The folder list can point at another install.
 
 ---
 
@@ -119,20 +87,18 @@ The default configuration template manages execution flags, offline options, and
 
 ## Mods (Maps, Scripts, Etc...)
 
-Browse and download community-created custom maps, gear, and mods:
-
-* [Compatable ReSkate / Skate. Mod Database](https://thunderstore.io/c/reskate/)
+Recommended lists [Skate 3 Improved](https://old.thunderstore.io/c/reskate/p/333/Skate_3_Improved/) under Skate 3 and Maps. Checking it lands the zip in `Mods\333-Skate_3_Improved`. Browse opens on [last updated mods](https://old.thunderstore.io/c/reskate/?ordering=last-updated&section=mods). The same page can switch to modpacks, newest, most downloaded, or top rated. Rest on a package to see its Thunderstore thumbnail. Mods and Modpacks split single packages from packs. Profiles saves the installed set under `Profiles\<name>`, and Load copies it back. Enable the mod in the in-game ReSkate MODS menu.
 
 ---
 
 ## License & Third-Party Dependencies
 
-ReSkate is distributed under the terms of the project license included in [`LICENSE.txt`](https://www.google.com/search?q=LICENSE.txt). Third-party dependencies and open-source compliance notices are stored within the [`licenses/`](https://www.google.com/search?q=licenses/) directory.
+The installer copies `LICENSE.txt` and `licenses\` into the Skate folder with the release.
 
 ---
 
 ## Download (Latest Release Link)
 
-### [Click Here to Download The Latest Nightly Release](https://github.com/gamedev44/ReSkateOverhaul/archive/refs/heads/main.zip)
+`ReSkate.bat` downloads the latest zip from [Dingo-Shenanigans/ReSkate](https://github.com/Dingo-Shenanigans/ReSkate/releases/latest).
 
 ---
