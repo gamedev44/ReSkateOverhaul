@@ -1,0 +1,16 @@
+# Downloaded mods and saved profiles
+Profiles/
+
+# This machine
+ReSkate.settings.json
+ReSkateOverhaul.code-workspace
+
+# Fetched on first Skate update
+Source/Setup/steamcmd/
+
+# OS and editor
+Thumbs.db
+Desktop.ini
+.vs/
+*.user
+*.partial

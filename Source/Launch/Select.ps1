@@ -5,6 +5,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+trap {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+    [System.Windows.Forms.MessageBox]::Show([string]$_.Exception.Message, "ReSkate") | Out-Null
+    exit 1
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -34,6 +39,44 @@ public class UiBackdrop {
     }
     raw.Dispose();
     return full;
+  }
+  public static Bitmap Load(string path, int width, int height) {
+    string cache = System.IO.Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+      "ReSkateOverhaul", "backdrop",
+      System.IO.Path.GetFileNameWithoutExtension(path) + "-" + width + "x" + height + ".png");
+    try {
+      if (System.IO.File.Exists(cache) && System.IO.File.GetLastWriteTimeUtc(cache) >= System.IO.File.GetLastWriteTimeUtc(path)) {
+        byte[] cached = System.IO.File.ReadAllBytes(cache);
+        using (var ms = new System.IO.MemoryStream(cached))
+        using (var img = Image.FromStream(ms))
+          return new Bitmap(img);
+      }
+    } catch {}
+    Bitmap made = Make(path, width, height);
+    try {
+      string dir = System.IO.Path.GetDirectoryName(cache);
+      if (!System.IO.Directory.Exists(dir)) System.IO.Directory.CreateDirectory(dir);
+      made.Save(cache, ImageFormat.Png);
+    } catch {}
+    return made;
+  }
+  public static void Preload(string imagePath, int width, int height, string catalogUrl, string catalogFile) {
+    System.Threading.ThreadPool.QueueUserWorkItem(delegate {
+      try { using (Bitmap bmp = Load(imagePath, width, height)) { } } catch {}
+      try {
+        if (string.IsNullOrEmpty(catalogUrl) || string.IsNullOrEmpty(catalogFile)) return;
+        string dir = System.IO.Path.GetDirectoryName(catalogFile);
+        if (!System.IO.Directory.Exists(dir)) System.IO.Directory.CreateDirectory(dir);
+        string part = catalogFile + ".partial";
+        using (var client = new System.Net.WebClient()) {
+          client.Headers["User-Agent"] = "ReSkateMods";
+          client.DownloadFile(catalogUrl, part);
+        }
+        if (System.IO.File.Exists(catalogFile)) System.IO.File.Delete(catalogFile);
+        System.IO.File.Move(part, catalogFile);
+      } catch {}
+    });
   }
   static Bitmap Cover(Image src, int width, int height) {
     float scale = Math.Max(width / (float)src.Width, height / (float)src.Height);
@@ -399,10 +442,13 @@ public class SessionCard : Control {
   public string Caption = "";
   public string Detail = "";
   public bool Light;
+  public bool Auto;
   int face;
   bool nameHot;
   bool nameDown;
+  bool skipClick;
   Rectangle nameHit;
+  Rectangle autoHit;
   Rectangle ink;
   bool inkReady;
   readonly Font detailFont = new Font("Segoe UI", 9f);
@@ -471,9 +517,20 @@ public class SessionCard : Control {
     base.OnMouseDown(e);
   }
   protected override void OnMouseUp(MouseEventArgs e) {
+    if (e.Button == MouseButtons.Left && autoHit.Contains(e.Location)) {
+      Auto = !Auto;
+      skipClick = true;
+      Invalidate();
+      if (AutoChanged != null) AutoChanged(this, EventArgs.Empty);
+    }
     bool inside = ClientRectangle.Contains(e.Location);
     SetFace(inside ? 1 : 0, inside && nameHit.Contains(e.Location), false);
     base.OnMouseUp(e);
+  }
+  public event EventHandler AutoChanged;
+  protected override void OnClick(EventArgs e) {
+    if (skipClick) { skipClick = false; return; }
+    base.OnClick(e);
   }
   protected override void OnMouseLeave(EventArgs e) {
     SetFace(0, false, false);
@@ -548,6 +605,38 @@ public class SessionCard : Control {
       TextRenderer.DrawText(g, Caption ?? "", Font, plateBox, inkColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
       var detail = new Rectangle(box.X + 8, plateBox.Bottom + 2, Math.Max(1, box.Width - 16), 22);
       TextRenderer.DrawText(g, Detail ?? "", detailFont, detail, Color.FromArgb(186, 186, 186), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+      string autoLabel = "auto update";
+      Size autoSize = TextRenderer.MeasureText(g, autoLabel, detailFont, new Size(200, 20), TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+      int tickSize = 13;
+      int aw = tickSize + 8 + autoSize.Width + 16;
+      int ah = 24;
+      int cut = Math.Max(16, Math.Min(box.Width, box.Height) / 7);
+      var autoBox = new Rectangle(box.Right - cut - aw + 8, box.Y + 12, aw, ah);
+      autoHit = autoBox;
+      using (GraphicsPath pill = MetalPlate.Rounded(autoBox, 8))
+      using (var wash = new SolidBrush(Color.FromArgb(150, 10, 12, 16)))
+      using (var edgePen = new Pen(Color.FromArgb(210, 255, 255, 255))) {
+        g.FillPath(wash, pill);
+        g.DrawPath(edgePen, pill);
+      }
+      var tick = new Rectangle(autoBox.X + 8, autoBox.Y + (ah - tickSize) / 2, tickSize, tickSize);
+      using (GraphicsPath tickPath = MetalPlate.Rounded(tick, 3))
+      using (var tickPen = new Pen(Color.White, 1.4f))
+      using (var tickFill = new SolidBrush(Auto ? Color.White : Color.FromArgb(40, 255, 255, 255))) {
+        g.FillPath(tickFill, tickPath);
+        g.DrawPath(tickPen, tickPath);
+        if (Auto) {
+          using (var check = new Pen(Color.FromArgb(16, 16, 16), 1.8f)) {
+            g.DrawLines(check, new Point[] {
+              new Point(tick.X + 3, tick.Y + 7),
+              new Point(tick.X + 6, tick.Y + 10),
+              new Point(tick.X + 10, tick.Y + 3)
+            });
+          }
+        }
+      }
+      var autoText = new Rectangle(tick.Right + 6, autoBox.Y, autoSize.Width + 4, ah);
+      TextRenderer.DrawText(g, autoLabel, detailFont, autoText, Color.White, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
       g.ResetClip();
       Color rim = face == 0 ? Color.FromArgb(214, 220, 228) : face == 2 ? Color.FromArgb(180, 70, 4) : Color.FromArgb(232, 93, 4);
       using (var rimPen = new Pen(rim, face == 0 ? 2f : 4f)) {
@@ -639,10 +728,21 @@ $ReSkateArt = Join-Path $RepoRoot "Assets\Logos\reskate.png"
 $SkateArt = Join-Path $RepoRoot "Assets\Logos\skate.png"
 $Script:SkateRoot = $null
 
+function Add-SkateHit {
+    param($Hits, [string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path "Skate.exe"))) { return }
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd("\")
+    foreach ($item in $Hits) { if ($item -ieq $full) { return } }
+    [void]$Hits.Add($full)
+}
+
 function Find-SkateRoots {
     $hits = New-Object System.Collections.Generic.List[string]
+    Add-SkateHit $hits ([string](Get-ReSkateSettings).skate)
     $rels = @(
         "Steam\steamapps\common\Skate",
+        "SteamLibrary\steamapps\common\Skate",
         "Program Files (x86)\Steam\steamapps\common\Skate",
         "Program Files\Steam\steamapps\common\Skate"
     )
@@ -657,16 +757,65 @@ function Find-SkateRoots {
     }
     foreach ($letter in ($letters | Select-Object -Unique)) {
         foreach ($rel in $rels) {
-            $path = "{0}:\{1}" -f $letter, $rel
-            if (Test-Path -LiteralPath (Join-Path $path "Skate.exe")) {
-                $full = [IO.Path]::GetFullPath($path).TrimEnd("\")
-                $seen = $false
-                foreach ($item in $hits) { if ($item -ieq $full) { $seen = $true; break } }
-                if (-not $seen) { $hits.Add($full) }
-            }
+            Add-SkateHit $hits ("{0}:\{1}" -f $letter, $rel)
+        }
+    }
+    if ($hits.Count -gt 0) { return $hits }
+
+    $steam = New-Object System.Collections.Generic.List[string]
+    foreach ($key in @(
+        "HKCU:\Software\Valve\Steam",
+        "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam",
+        "HKLM:\SOFTWARE\Valve\Steam"
+    )) {
+        try {
+            $install = [string](Get-ItemProperty -Path $key -ErrorAction Stop).InstallPath
+            if ($install) { [void]$steam.Add($install) }
+        }
+        catch {}
+    }
+    foreach ($root in @($steam)) {
+        Add-SkateHit $hits (Join-Path $root "steamapps\common\Skate")
+        $vdf = Join-Path $root "steamapps\libraryfolders.vdf"
+        if (-not (Test-Path -LiteralPath $vdf)) { continue }
+        $text = Get-Content -LiteralPath $vdf -Raw -ErrorAction SilentlyContinue
+        if (-not $text) { continue }
+        foreach ($match in [regex]::Matches($text, '"path"\s+"([^"]+)"')) {
+            $lib = $match.Groups[1].Value -replace '\\\\', '\'
+            Add-SkateHit $hits (Join-Path $lib "steamapps\common\Skate")
+        }
+        foreach ($match in [regex]::Matches($text, '"\d+"\s+"([A-Za-z]:\\\\[^"]+)"')) {
+            $lib = $match.Groups[1].Value -replace '\\\\', '\'
+            Add-SkateHit $hits (Join-Path $lib "steamapps\common\Skate")
         }
     }
     return $hits
+}
+
+function Test-MachineReady {
+    $bad = New-Object System.Collections.Generic.List[string]
+    if ($PSVersionTable.PSVersion -lt [version]"5.1") { [void]$bad.Add("PowerShell 5.1 or newer is required.") }
+    if ($env:PROCESSOR_ARCHITECTURE -notin @("AMD64", "ARM64")) { [void]$bad.Add("64-bit Windows is required.") }
+    try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop }
+    catch { [void]$bad.Add("ZIP support is missing.") }
+    return @($bad)
+}
+
+function Show-SkateMissing {
+    [System.Windows.Forms.MessageBox]::Show(
+        "Skate was not found.`r`n`r`nUse Folder and open the folder that contains Skate.exe.`r`n`r`nExample:`r`nD:\Steam\steamapps\common\Skate",
+        "ReSkate"
+    ) | Out-Null
+}
+
+function Remember-SkateRoot {
+    param([string]$Path)
+    if (-not $Path) { return }
+    $Script:SkateRoot = $Path
+    $saved = Get-ReSkateSettings
+    if ([string]$saved.skate -ieq $Path) { return }
+    $saved.skate = $Path
+    Save-ReSkateSettings $saved
 }
 
 function Start-PowerShell {
@@ -684,6 +833,74 @@ function Start-PowerShell {
     return $proc
 }
 
+function Test-ReSkateWasAdded {
+    param([string]$SkateRoot)
+    if (Test-Path -LiteralPath (Join-Path $SkateRoot "ReSkate_Mode")) { return $true }
+    if (Test-Path -LiteralPath (Join-Path $SkateRoot "ReSkate.dll")) { return $true }
+    return [bool](Get-ChildItem -LiteralPath $SkateRoot -Directory -Filter "ReSkate_Backup_*" -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+function Get-SteamAppId {
+    param([string]$SkateRoot)
+    $common = Split-Path -Parent $SkateRoot
+    if ((Split-Path -Leaf $common) -ne "common") { return $null }
+    $steamapps = Split-Path -Parent $common
+    $folder = Split-Path -Leaf $SkateRoot
+    foreach ($manifest in @(Get-ChildItem -LiteralPath $steamapps -Filter "appmanifest_*.acf" -ErrorAction SilentlyContinue)) {
+        $text = Get-Content -LiteralPath $manifest.FullName -Raw -ErrorAction SilentlyContinue
+        if ($text -match '"installdir"\s+"([^"]+)"' -and $Matches[1] -eq $folder -and $manifest.Name -match 'appmanifest_(\d+)\.acf') {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
+function Get-SteamCmd {
+    $known = @(
+        (Join-Path $RepoRoot "Source\Setup\steamcmd\steamcmd.exe"),
+        "C:\steamcmd\steamcmd.exe"
+    )
+    foreach ($path in $known) {
+        if (Test-Path -LiteralPath $path) { return $path }
+    }
+    $cmd = Get-Command steamcmd.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $dest = Join-Path $RepoRoot "Source\Setup\steamcmd"
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    $zip = Join-Path $env:TEMP "steamcmd.zip"
+    Invoke-WebRequest -Uri "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip" -OutFile $zip
+    Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+    $exe = Join-Path $dest "steamcmd.exe"
+    if (Test-Path -LiteralPath $exe) { return $exe }
+    return $null
+}
+
+function Invoke-SteamFresh {
+    param([string]$SkateRoot, [switch]$Force, [switch]$Hidden, [switch]$Background)
+    if (-not $SkateRoot) { $SkateRoot = $Script:SkateRoot }
+    if (-not $SkateRoot) { Show-SkateMissing; return }
+    if (-not $Force) {
+        if (-not (Test-ReSkateWasAdded $SkateRoot)) { return }
+        $mark = Join-Path $SkateRoot "ReSkate_Mode\fresh.txt"
+        if (Test-Path -LiteralPath $mark) { return }
+    }
+    $appId = Get-SteamAppId $SkateRoot
+    if (-not $appId) { throw "Steam could not find this Skate install, so the files were not rewritten." }
+    $steamcmd = Get-SteamCmd
+    if (-not $steamcmd) { throw "SteamCMD is not available, so the Skate files were not rewritten." }
+    $arg = "+login anonymous +force_install_dir `"$SkateRoot`" +app_update $appId validate +quit"
+    $start = @{ FilePath = $steamcmd; ArgumentList = $arg; PassThru = $true }
+    if ($Hidden -or $Background) { $start.WindowStyle = "Hidden" }
+    if (-not $Background) { $start.Wait = $true }
+    $proc = Start-Process @start
+    if ($Background) { return }
+    if ($proc.ExitCode -eq 7) { $proc = Start-Process @start }
+    if ($proc.ExitCode -ne 0) { throw "SteamCMD could not rewrite the Skate files. Exit $($proc.ExitCode)." }
+    $modeDir = Join-Path $SkateRoot "ReSkate_Mode"
+    New-Item -ItemType Directory -Force -Path $modeDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $modeDir "fresh.txt") -Value (Get-Date -Format o) -Encoding ASCII
+}
+
 function Invoke-ModeSwitch {
     param([string]$Mode)
     $unpacker = Join-Path $RepoRoot "Source\Setup\Install.ps1"
@@ -696,9 +913,16 @@ function Invoke-ModeSwitch {
 
 function Start-ChosenGame {
     param([string]$Mode)
-    if (-not $Script:SkateRoot) { throw "Choose the Skate folder first." }
+    if (-not $Script:SkateRoot) { Show-SkateMissing; return }
+    if ($Mode -eq "ReSkate") {
+        Remove-Item -LiteralPath (Join-Path $Script:SkateRoot "ReSkate_Mode\fresh.txt") -ErrorAction SilentlyContinue
+    }
     Invoke-ModeSwitch $Mode
+    if ($Mode -eq "Skate") { Invoke-SteamFresh $Script:SkateRoot }
     $exeName = $(if ($Mode -eq "ReSkate") { "ReSkateLauncher.exe" } else { "Skate.exe" })
+    if ($Mode -eq "Skate" -and (Test-Path -LiteralPath (Join-Path $Script:SkateRoot "ReSkate.dll"))) {
+        throw "ReSkate is still in the Skate folder. Normal launch was stopped."
+    }
     $exe = Join-Path $Script:SkateRoot $exeName
     if (-not (Test-Path -LiteralPath $exe)) {
         throw "$exeName is not in the Skate folder yet."
@@ -745,18 +969,45 @@ function New-LogoCard {
     return $card
 }
 
+function New-CardColumn {
+    param($Card, [string]$Mode, [bool]$Auto)
+    $Card.Auto = $Auto
+    $Card.Add_AutoChanged({
+        $saved = Get-ReSkateSettings
+        if ([string]$this.Tag -eq "ReSkate") { $saved.autoReskate = $this.Auto }
+        else { $saved.autoSkate = $this.Auto }
+        Save-ReSkateSettings $saved
+        if (-not $this.Auto) { return }
+        try {
+            if ([string]$this.Tag -eq "ReSkate") { Start-ReSkateUpdate }
+            else { Invoke-SteamFresh -Force -Background }
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "ReSkate") | Out-Null }
+    })
+    return $Card
+}
+
 function Get-ReSkateSettings {
     $path = Join-Path $RepoRoot "ReSkate.settings.json"
-    $settings = @{ reskate = $false; mods = $false; allowed = @() }
+    $settings = @{
+        reskate = $false; mods = $false; allowed = @(); skate = ""
+        launcher = $true; release = $true; game = $false
+        autoReskate = $false; autoSkate = $false
+    }
     if (-not (Test-Path -LiteralPath $path)) { return $settings }
     try {
         $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-        foreach ($key in @("reskate", "mods")) {
+        foreach ($key in @("reskate", "mods", "launcher", "release", "game", "autoReskate", "autoSkate")) {
             $prop = $json.PSObject.Properties[$key]
             if ($prop) { $settings[$key] = [bool]$prop.Value }
         }
+        if (-not $json.PSObject.Properties["autoReskate"] -and $json.PSObject.Properties["reskate"]) {
+            $settings.autoReskate = [bool]$json.reskate
+        }
         $allowed = $json.PSObject.Properties["allowed"]
         if ($allowed) { $settings.allowed = @($allowed.Value | ForEach-Object { [string]$_ }) }
+        $skate = $json.PSObject.Properties["skate"]
+        if ($skate) { $settings.skate = [string]$skate.Value }
     }
     catch {}
     return $settings
@@ -765,9 +1016,15 @@ function Get-ReSkateSettings {
 function Save-ReSkateSettings {
     param($Settings)
     $payload = [ordered]@{
-        reskate = [bool]$Settings.reskate
-        mods    = [bool]$Settings.mods
-        allowed = @($Settings.allowed)
+        reskate     = [bool]$Settings.reskate
+        mods        = [bool]$Settings.mods
+        allowed     = @($Settings.allowed)
+        skate       = [string]$Settings.skate
+        launcher    = [bool]$Settings.launcher
+        release     = [bool]$Settings.release
+        game        = [bool]$Settings.game
+        autoReskate = [bool]$Settings.autoReskate
+        autoSkate   = [bool]$Settings.autoSkate
     }
     $payload | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RepoRoot "ReSkate.settings.json") -Encoding UTF8
 }
@@ -792,26 +1049,16 @@ function Request-DefenderAllow {
         if ($folder -and -not (Test-PathAllowed $folder)) { [void]$need.Add($folder) }
     }
     if ($need.Count -eq 0) { return }
-    $allow = Join-Path $RepoRoot "Source\Setup\Allow.ps1"
-    $cmd = "-NoProfile -ExecutionPolicy Bypass -File `"$allow`" -RepoRoot `"$RepoRoot`""
+    $exe = Join-Path $RepoRoot "Source\Setup\ReSkate.exe"
+    $cmd = "-RepoRoot `"$RepoRoot`""
     foreach ($folder in $need) { $cmd += " -Path `"$folder`"" }
     try {
-        $proc = Start-Process `
-            -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-            -ArgumentList $cmd `
-            -Wait `
-            -PassThru
+        $proc = Start-Process -FilePath $exe -ArgumentList $cmd -Wait -PassThru
         $code = 1
         if ($null -ne $proc -and $null -ne $proc.ExitCode) { $code = $proc.ExitCode }
         if ($code -eq 0 -or $code -eq 2 -or $code -eq 1223) { return }
-        throw "Windows antivirus exclusion was not added."
     }
-    catch {
-        [System.Windows.Forms.MessageBox]::Show(
-            "Press Yes on the Windows prompt so ReSkate is allowed through antivirus.`r`nYou can also run ReSkate.bat allow.",
-            "ReSkate"
-        ) | Out-Null
-    }
+    catch {}
 }
 
 function Select-GameFolder {
@@ -836,10 +1083,72 @@ function Select-GameFolder {
 }
 
 function Start-ReSkateUpdate {
-    if (-not $Script:SkateRoot) { return }
+    if (-not $Script:SkateRoot) { Show-SkateMissing; return }
     $script = Join-Path $RepoRoot "Source\Setup\Install.ps1"
     $argLine = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" -Action Update -Quiet -SkatePath `"$Script:SkateRoot`""
     Start-PowerShell -Arguments $argLine -Hidden | Out-Null
+}
+
+function Update-Launcher {
+    $git = Get-Command git.exe -ErrorAction SilentlyContinue
+    if (-not $git) { throw "Git is not available, so this launcher was not updated." }
+    $proc = Start-Process -FilePath $git.Source -ArgumentList "-C `"$RepoRoot`" pull --ff-only" -Wait -PassThru -WindowStyle Hidden
+    if ($proc.ExitCode -ne 0) { throw "The launcher update failed." }
+}
+
+function Start-SelectedUpdates {
+    $saved = Get-ReSkateSettings
+    if (-not ($saved.launcher -or $saved.release -or $saved.game)) {
+        throw "Open Settings and choose what Update refreshes."
+    }
+    if (($saved.release -or $saved.game) -and -not $Script:SkateRoot) { Show-SkateMissing; return }
+    if ($saved.launcher) { Update-Launcher }
+    if ($saved.release) { Start-ReSkateUpdate }
+    if ($saved.game) { Invoke-SteamFresh -Force -Background }
+}
+
+function Show-UpdateSettings {
+    $saved = Get-ReSkateSettings
+    $page = New-Object System.Windows.Forms.Form
+    $page.Text = "Update"
+    $page.StartPosition = "CenterParent"
+    $page.FormBorderStyle = "FixedDialog"
+    $page.MaximizeBox = $false
+    $page.MinimizeBox = $false
+    $page.ClientSize = New-Object System.Drawing.Size(420, 220)
+    $page.BackColor = [System.Drawing.Color]::FromArgb(16, 16, 16)
+    $page.ForeColor = [System.Drawing.Color]::White
+    $boxes = @()
+    $top = 18
+    foreach ($item in @(
+        @{ Key = "launcher"; Text = "This launcher" },
+        @{ Key = "release"; Text = "ReSkate" },
+        @{ Key = "game"; Text = "Skate, through SteamCMD" }
+    )) {
+        $box = New-Object System.Windows.Forms.CheckBox
+        $box.Text = $item.Text
+        $box.Tag = $item.Key
+        $box.Checked = [bool]$saved[$item.Key]
+        $box.Left = 24
+        $box.Top = $top
+        $box.Width = 360
+        $box.ForeColor = [System.Drawing.Color]::White
+        $box.BackColor = $page.BackColor
+        $page.Controls.Add($box)
+        $boxes += $box
+        $top += 36
+    }
+    $save = New-Object MetalButton
+    $save.Text = "Save"
+    $save.SetBounds(150, 160, 120, 34)
+    $save.Add_Click({
+        $current = Get-ReSkateSettings
+        foreach ($box in $boxes) { $current[$box.Tag] = $box.Checked }
+        Save-ReSkateSettings $current
+        $page.Close()
+    }.GetNewClosure())
+    $page.Controls.Add($save)
+    [void]$page.ShowDialog($form)
 }
 
 function Open-Tool {
@@ -847,6 +1156,7 @@ function Open-Tool {
     if ($Action -eq "Mods") {
         $script = Join-Path $RepoRoot "Source\Mods\Mods.ps1"
         $argLine = "-NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`""
+        if ($Script:SkateRoot) { $argLine += " -SkatePath `"$Script:SkateRoot`"" }
         Start-PowerShell -Arguments $argLine -Hidden | Out-Null
         return
     }
@@ -868,7 +1178,7 @@ $form.BackColor = $bg
 $form.ForeColor = [System.Drawing.Color]::White
 $bgArt = Join-Path $RepoRoot "Assets\Backgrounds\window.jpg"
 if (Test-Path -LiteralPath $bgArt) {
-    $form.BackgroundImage = [UiBackdrop]::Make($bgArt, 1180, 760)
+    $form.BackgroundImage = [UiBackdrop]::Load($bgArt, 1180, 760)
     $form.BackgroundImageLayout = "Stretch"
 }
 
@@ -913,14 +1223,14 @@ $pathBox.Add_DrawItem({
 
 $bar = New-Object System.Windows.Forms.TableLayoutPanel
 $bar.Dock = "Fill"
-$bar.ColumnCount = 6
+$bar.ColumnCount = 5
 $bar.RowCount = 1
 $bar.BackColor = $footer.BackColor
 $bar.Margin = New-Object System.Windows.Forms.Padding(0)
 $bar.Padding = New-Object System.Windows.Forms.Padding(0)
 [void]$bar.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void]$bar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-foreach ($width in 104, 104, 104, 104, 210) {
+foreach ($width in 104, 104, 104, 210) {
     [void]$bar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, $width)))
 }
 $pathBox.Dock = "Fill"
@@ -935,9 +1245,8 @@ $bar.Controls.Add($browse, 1, 0)
 
 $col = 2
 foreach ($pair in @(
-    @{ Text = "Update"; Action = "All" },
-    @{ Text = "Mods"; Action = "Mods" },
-    @{ Text = "Check"; Action = "Check" }
+    @{ Text = "Update"; Action = "Selected" },
+    @{ Text = "Mods"; Action = "Mods" }
 )) {
     $button = New-Object MetalButton
     $button.Text = $pair.Text
@@ -945,42 +1254,22 @@ foreach ($pair in @(
     $button.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
     $button.Tag = $pair.Action
     $button.Add_Click({
-        try { Open-Tool ([string]$this.Tag) }
+        try {
+            if ([string]$this.Tag -eq "Selected") { Start-SelectedUpdates }
+            else { Open-Tool ([string]$this.Tag) }
+        }
         catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "ReSkate") | Out-Null }
     })
     $bar.Controls.Add($button, $col, 0)
     $col++
 }
 
-$autoHost = New-Object System.Windows.Forms.Panel
-$autoHost.Dock = "Fill"
-$autoHost.BackColor = $footer.BackColor
-$autoHost.Margin = New-Object System.Windows.Forms.Padding(0)
-$autoLabel = New-Object System.Windows.Forms.Label
-$autoLabel.Text = "Auto-update"
-$autoLabel.Dock = "Left"
-$autoLabel.Width = 108
-$autoLabel.TextAlign = "MiddleLeft"
-$autoLabel.ForeColor = [System.Drawing.Color]::White
-$autoLabel.BackColor = $footer.BackColor
-$autoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-$autoBox = New-Object GoldToggle
-$autoBox.Size = New-Object System.Drawing.Size(58, 28)
-$autoBox.Anchor = "Right"
-$autoHost.Add_Resize({
-    $autoBox.Left = [Math]::Max(0, $autoHost.ClientSize.Width - $autoBox.Width)
-    $autoBox.Top = [Math]::Max(0, [int](($autoHost.ClientSize.Height - $autoBox.Height) / 2))
-}.GetNewClosure())
-$autoBox.Checked = [bool](Get-ReSkateSettings).reskate
-$autoBox.Add_CheckedChanged({
-    $saved = Get-ReSkateSettings
-    $saved.reskate = $autoBox.Checked
-    Save-ReSkateSettings $saved
-    if ($autoBox.Checked) { Start-ReSkateUpdate }
-})
-$autoHost.Controls.Add($autoBox)
-$autoHost.Controls.Add($autoLabel)
-$bar.Controls.Add($autoHost, 5, 0)
+$settingsButton = New-Object MetalButton
+$settingsButton.Text = "Settings"
+$settingsButton.Dock = "Fill"
+$settingsButton.Margin = New-Object System.Windows.Forms.Padding(0)
+$settingsButton.Add_Click({ Show-UpdateSettings })
+$bar.Controls.Add($settingsButton, 4, 0)
 $footer.Controls.Add($bar)
 
 $table = New-Object GlassTable
@@ -1004,8 +1293,11 @@ function Open-CardArt([string]$Path) {
 }
 $rePlate = Open-CardArt (Join-Path $RepoRoot "Assets\Backgrounds\reskate-card.jpg")
 $skPlate = Open-CardArt (Join-Path $RepoRoot "Assets\Backgrounds\skate-card.jpg")
-$table.Controls.Add((New-LogoCard $ReSkateArt "RESKATE" "Overhaul, mods, offline play" "ReSkate" $orange $rePlate), 0, 0)
-$table.Controls.Add((New-LogoCard $SkateArt "SKATE" "Official game" "Skate" $steel $skPlate), 1, 0)
+$savedNow = Get-ReSkateSettings
+$reCard = New-LogoCard $ReSkateArt "RESKATE" "Overhaul, mods, offline play" "ReSkate" $orange $rePlate
+$skCard = New-LogoCard $SkateArt "SKATE" "Official game" "Skate" $steel $skPlate
+$table.Controls.Add((New-CardColumn $reCard "ReSkate" $savedNow.autoReskate), 0, 0)
+$table.Controls.Add((New-CardColumn $skCard "Skate" $savedNow.autoSkate), 1, 0)
 
 $edgeLine = [System.Drawing.Color]::FromArgb(232, 120, 40)
 $topLine = New-Object System.Windows.Forms.Panel
@@ -1023,7 +1315,7 @@ $form.Controls.Add($topLine)
 $form.Controls.Add($bottomLine)
 
 $pathBox.Add_SelectedIndexChanged({
-    if ($pathBox.SelectedItem) { $Script:SkateRoot = [string]$pathBox.SelectedItem }
+    if ($pathBox.SelectedItem) { Remember-SkateRoot ([string]$pathBox.SelectedItem) }
 })
 
 $browse.Add_Click({
@@ -1032,10 +1324,14 @@ $browse.Add_Click({
         if (-not $start -and $pathBox.SelectedItem) { $start = [string]$pathBox.SelectedItem }
         $picked = Select-GameFolder -Owner $form.Handle -Start $start
         if (-not $picked) { return }
-        $Script:SkateRoot = [System.IO.Path]::GetFullPath($picked)
+        $pickedRoot = [System.IO.Path]::GetFullPath($picked)
+        if (-not (Test-Path -LiteralPath (Join-Path $pickedRoot "Skate.exe"))) {
+            Show-SkateMissing
+            return
+        }
+        Remember-SkateRoot $pickedRoot
         if (-not $pathBox.Items.Contains($Script:SkateRoot)) { [void]$pathBox.Items.Add($Script:SkateRoot) }
         $pathBox.SelectedItem = $Script:SkateRoot
-        Request-DefenderAllow -Paths @($Script:SkateRoot)
     }
     catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "ReSkate") | Out-Null }
 })
@@ -1044,15 +1340,39 @@ $form.Add_HandleCreated({ try { [UiCaption]::Apply($form.Handle) } catch {} })
 $Script:FoundRoots = @()
 $form.Add_Shown({
     try { [UiCaption]::Apply($form.Handle) } catch {}
+    [UiBackdrop]::Preload(
+        (Join-Path $RepoRoot "Assets\Backgrounds\mods.jpg"),
+        1080,
+        700,
+        "https://thunderstore.io/c/reskate/api/v1/package/",
+        (Join-Path $env:LOCALAPPDATA "ReSkateOverhaul\catalog\packages.json")
+    )
+    $ready = @(Test-MachineReady)
+    if ($ready.Count -gt 0) {
+        [System.Windows.Forms.MessageBox]::Show(($ready -join "`r`n"), "ReSkate") | Out-Null
+    }
+    $Script:FoundRoots = @(Find-SkateRoots)
+    $allowPaths = New-Object System.Collections.Generic.List[string]
+    [void]$allowPaths.Add($RepoRoot)
+    foreach ($hit in @($Script:FoundRoots)) { [void]$allowPaths.Add($hit) }
+    Request-DefenderAllow -Paths $allowPaths.ToArray()
     foreach ($hit in @($Script:FoundRoots)) { [void]$pathBox.Items.Add($hit) }
     if ($pathBox.Items.Count -gt 0) { $pathBox.SelectedIndex = 0 }
-    if ($autoBox.Checked) { Start-ReSkateUpdate }
+    else { Show-SkateMissing }
+    if ($Script:SkateRoot) {
+        $disk = New-Object System.IO.DriveInfo ([System.IO.Path]::GetPathRoot($Script:SkateRoot))
+        if ($disk.IsReady -and $disk.AvailableFreeSpace -lt 1GB) {
+            $free = [math]::Round($disk.AvailableFreeSpace / 1GB, 1)
+            [System.Windows.Forms.MessageBox]::Show("This drive has $free GB free. ReSkate needs at least 1 GB.", "ReSkate") | Out-Null
+        }
+    }
+    $savedNow = Get-ReSkateSettings
+    if ($ready.Count -gt 0 -or -not $Script:SkateRoot) { return }
+    try {
+        if ($savedNow.autoReskate) { Start-ReSkateUpdate }
+        if ($savedNow.autoSkate) { Invoke-SteamFresh -Force -Background }
+    }
+    catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "ReSkate") | Out-Null }
 })
-
-$Script:FoundRoots = @(Find-SkateRoots)
-$allowPaths = New-Object System.Collections.Generic.List[string]
-[void]$allowPaths.Add($RepoRoot)
-foreach ($hit in @($Script:FoundRoots)) { [void]$allowPaths.Add($hit) }
-Request-DefenderAllow -Paths $allowPaths.ToArray()
 
 [void]$form.ShowDialog()

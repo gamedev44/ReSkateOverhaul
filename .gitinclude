@@ -1,0 +1,15 @@
+README.md
+ReSkate.bat
+.gitignore
+.gitinclude
+Assets/
+Source/Launch/
+Source/Mods/
+Source/Setup/Allow.ps1
+Source/Setup/Install.ps1
+Source/Setup/ReSkate.cs
+Source/Setup/ReSkate.exe
+Source/Setup/ReSkate.ico
+Source/Setup/ReSkate.manifest
+Source/Setup/ReSkate.rc
+Source/Setup/IronWillInteractive.cer

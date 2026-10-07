@@ -65,27 +65,7 @@ function Add-Wanted {
     [void]$List.Add($Full)
 }
 
-if (-not (Test-Administrator)) {
-    Write-Host "Press Yes to allow ReSkate through Windows Security."
-    $cmd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -RepoRoot `"$RepoRoot`""
-    foreach ($item in @($Path)) {
-        if ($item) { $cmd += " -Path `"$item`"" }
-    }
-    if ($Quiet) { $cmd += " -Quiet" }
-    try {
-        $proc = Start-Process `
-            -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-            -Verb RunAs `
-            -ArgumentList $cmd `
-            -Wait `
-            -PassThru
-    }
-    catch {
-        exit 1223
-    }
-    if ($null -eq $proc -or $null -eq $proc.ExitCode) { exit 1 }
-    exit $proc.ExitCode
-}
+if (-not (Test-Administrator)) { exit 1 }
 
 $RepoRoot = Get-CleanPath $RepoRoot
 if (-not $RepoRoot) { throw "The ReSkate folder path is missing." }
@@ -158,14 +138,16 @@ foreach ($image in $processes) {
 }
 
 $settingsPath = Join-Path $RepoRoot "ReSkate.settings.json"
-$payload = [ordered]@{ reskate = $false; mods = $false; allowed = @() }
+$payload = [ordered]@{ reskate = $false; mods = $false; allowed = @(); skate = "" }
 if (Test-Path -LiteralPath $settingsPath) {
     try {
         $json = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
-        foreach ($key in @("reskate", "mods")) {
+        foreach ($key in @("reskate", "mods", "launcher", "release", "game", "autoReskate", "autoSkate")) {
             $prop = $json.PSObject.Properties[$key]
             if ($prop) { $payload[$key] = [bool]$prop.Value }
         }
+        $skate = $json.PSObject.Properties["skate"]
+        if ($skate) { $payload.skate = [string]$skate.Value }
         $prev = $json.PSObject.Properties["allowed"]
         if ($prev) {
             foreach ($item in @($prev.Value)) {

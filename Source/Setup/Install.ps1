@@ -206,18 +206,13 @@ function Get-FreeSpaceGB {
     )
 
     $root = [System.IO.Path]::GetPathRoot($Path)
-
-    $drive = Get-CimInstance Win32_LogicalDisk |
-        Where-Object {
-            $_.DeviceID -eq $root.TrimEnd('\')
-        }
-
-    if (-not $drive) {
+    $drive = New-Object System.IO.DriveInfo $root
+    if (-not $drive.IsReady) {
         return 0
     }
 
     return [math]::Round(
-        $drive.FreeSpace / 1GB,
+        $drive.AvailableFreeSpace / 1GB,
         2
     )
 }
@@ -248,9 +243,10 @@ function Find-SkateOnFixedDrives {
 
     $hits = @()
 
-    foreach ($disk in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
+    foreach ($disk in [System.IO.DriveInfo]::GetDrives()) {
+        if ($disk.DriveType -ne [System.IO.DriveType]::Fixed -or -not $disk.IsReady) { continue }
 
-        $path = Join-Path ($disk.DeviceID + "\") $SkateRelativePath
+        $path = Join-Path $disk.Name $SkateRelativePath
         $exe = Join-Path $path "Skate.exe"
 
         if (Test-Path -LiteralPath $exe -PathType Leaf) {
@@ -669,6 +665,22 @@ function Clear-ModHold {
     }
 }
 
+function Test-ReSkateLive {
+
+    param(
+        [string]$SkateRoot
+    )
+
+    foreach ($name in $ExpectedFiles) {
+
+        if (Test-Path -LiteralPath (Join-Path $SkateRoot $name)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Switch-GameMode {
 
     param(
@@ -677,11 +689,12 @@ function Switch-GameMode {
     )
 
     $current = Get-ActiveMode $SkateRoot
+    $liveReSkate = Test-ReSkateLive $SkateRoot
 
     Write-Host "Current mode: $current" -ForegroundColor White
-    Write-Log "Mode now: $current. Requested: $Target"
+    Write-Log "Mode now: $current. Requested: $Target. ReSkate files live: $liveReSkate"
 
-    if ($current -eq $Target) {
+    if ($current -eq $Target -and -not ($Target -eq "Skate" -and $liveReSkate)) {
         Write-Host "Already in $Target mode. Nothing moved." -ForegroundColor Green
         return
     }
@@ -714,6 +727,14 @@ function Switch-GameMode {
         }
     }
 
+    $oldestBackup = Get-ChildItem `
+        -LiteralPath $SkateRoot `
+        -Directory `
+        -Filter "ReSkate_Backup_*" `
+        -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime |
+        Select-Object -First 1
+
     foreach ($name in $ExpectedFiles) {
 
         $live = Join-Path $SkateRoot $name
@@ -721,7 +742,14 @@ function Switch-GameMode {
         if ($Target -eq "Skate") {
 
             Move-ModeEntry -Source $live -Destination (Join-Path $mod $name)
-            Move-ModeEntry -Source (Join-Path $vanilla $name) -Destination $live
+
+            $original = $null
+            if ($oldestBackup -and $name -notin @("ReSkateLauncher.exe", "ReSkate.dll", "Launcher.json")) {
+                $original = Join-Path $oldestBackup.FullName $name
+            }
+            if ($original -and (Test-Path -LiteralPath $original)) {
+                Copy-ModeEntry -Source $original -Destination $live
+            }
         }
         else {
 
@@ -731,6 +759,10 @@ function Switch-GameMode {
     }
 
     Set-ActiveMode -SkateRoot $SkateRoot -Mode $Target
+
+    if ($Target -eq "Skate" -and (Test-ReSkateLive $SkateRoot)) {
+        Fail "ReSkate files are still beside Skate.exe. Normal launch was stopped."
+    }
 
     if ($Target -eq "Skate") {
         Write-Host "Skate is ON. ReSkate files are parked." -ForegroundColor Green

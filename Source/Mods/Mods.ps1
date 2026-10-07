@@ -1,6 +1,7 @@
 #Requires -Version 5.1
 param(
-    [string]$Drive
+    [string]$Drive,
+    [string]$SkatePath
 )
 
 Set-StrictMode -Version Latest
@@ -88,6 +89,27 @@ public class UiBackdrop {
     raw.Dispose();
     return full;
   }
+  public static Bitmap Load(string path, int width, int height) {
+    string cache = System.IO.Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+      "ReSkateOverhaul", "backdrop",
+      System.IO.Path.GetFileNameWithoutExtension(path) + "-" + width + "x" + height + ".png");
+    try {
+      if (System.IO.File.Exists(cache) && System.IO.File.GetLastWriteTimeUtc(cache) >= System.IO.File.GetLastWriteTimeUtc(path)) {
+        byte[] cached = System.IO.File.ReadAllBytes(cache);
+        using (var ms = new System.IO.MemoryStream(cached))
+        using (var img = Image.FromStream(ms))
+          return new Bitmap(img);
+      }
+    } catch {}
+    Bitmap made = Make(path, width, height);
+    try {
+      string dir = System.IO.Path.GetDirectoryName(cache);
+      if (!System.IO.Directory.Exists(dir)) System.IO.Directory.CreateDirectory(dir);
+      made.Save(cache, ImageFormat.Png);
+    } catch {}
+    return made;
+  }
   static Bitmap Cover(Image src, int width, int height) {
     float scale = Math.Max(width / (float)src.Width, height / (float)src.Height);
     int dw = Math.Max(1, (int)(src.Width * scale));
@@ -139,7 +161,11 @@ public class UiBackdrop {
   }
 }
 public class GlassPanel : Panel {
-  public GlassPanel() { BackColor = Color.Transparent; }
+  public GlassPanel() {
+    DoubleBuffered = true;
+    ResizeRedraw = true;
+    BackColor = Color.Transparent;
+  }
   protected override void OnPaintBackground(PaintEventArgs e) { PaintParent(this, e); }
   public static void PaintParent(Control self, PaintEventArgs e) {
     Form form = self.FindForm();
@@ -157,11 +183,19 @@ public class GlassPanel : Panel {
   }
 }
 public class GlassTable : TableLayoutPanel {
-  public GlassTable() { BackColor = Color.Transparent; }
+  public GlassTable() {
+    DoubleBuffered = true;
+    ResizeRedraw = true;
+    BackColor = Color.Transparent;
+  }
   protected override void OnPaintBackground(PaintEventArgs e) { GlassPanel.PaintParent(this, e); }
 }
 public class GlassFlow : FlowLayoutPanel {
-  public GlassFlow() { BackColor = Color.Transparent; }
+  public GlassFlow() {
+    DoubleBuffered = true;
+    ResizeRedraw = true;
+    BackColor = Color.Transparent;
+  }
   protected override void OnPaintBackground(PaintEventArgs e) { GlassPanel.PaintParent(this, e); }
 }
 public class UiShape {
@@ -281,12 +315,16 @@ function Find-SkateRoots {
         "Program Files (x86)\Steam\steamapps\common\Skate",
         "Program Files\Steam\steamapps\common\Skate"
     )
-    $letters = @()
-    if ($Drive) { $letters += ($Drive.ToUpper() -replace "[^A-Z]", "").Substring(0, 1) }
-    foreach ($disk in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
-        $letters += $disk.DeviceID.TrimEnd(":").Substring(0, 1)
+    $letters = New-Object System.Collections.Generic.List[string]
+    if ($Drive) {
+        $clean = ($Drive.ToUpper() -replace "[^A-Z]", "")
+        if ($clean.Length -ge 1) { $letters.Add($clean.Substring(0, 1)) }
     }
-    $letters = $letters | Select-Object -Unique
+    foreach ($disk in [System.IO.DriveInfo]::GetDrives()) {
+        if ($disk.DriveType -ne [System.IO.DriveType]::Fixed -or -not $disk.IsReady) { continue }
+        $letters.Add($disk.Name.Substring(0, 1))
+    }
+    $letters = @($letters | Select-Object -Unique)
     foreach ($letter in $letters) {
         foreach ($rel in $rels) {
             $path = "{0}:\{1}" -f $letter, $rel
@@ -348,8 +386,35 @@ function Refresh-Profiles {
     }
 }
 
+function Get-ModsOffRoot {
+    if (-not $Script:SkateRoot) { throw "Choose the Skate folder first." }
+    $off = Join-Path $Script:SkateRoot "ModsDisabled"
+    if (-not (Test-Path -LiteralPath $off)) {
+        New-Item -ItemType Directory -Path $off -Force | Out-Null
+    }
+    return $off
+}
+
+function Sync-InstalledItem($Item) {
+    $name = [string]$Item.Text
+    if (-not $name) { return }
+    $live = Join-Path (Get-ModsRoot) $name
+    $off = Join-Path (Get-ModsOffRoot) $name
+    $isOn = Test-Path -LiteralPath $live
+    if ($Item.Checked -and -not $isOn -and (Test-Path -LiteralPath $off)) {
+        if (Test-Path -LiteralPath $live) { Remove-Item -LiteralPath $live -Recurse -Force }
+        Move-Item -LiteralPath $off -Destination $live
+        Write-LogBox "On  $name"
+    }
+    elseif ((-not $Item.Checked) -and $isOn) {
+        if (Test-Path -LiteralPath $off) { Remove-Item -LiteralPath $off -Recurse -Force }
+        Move-Item -LiteralPath $live -Destination $off
+        Write-LogBox "Off $name"
+    }
+}
+
 function Save-ModProfile {
-    param([string]$Name)
+    param([string]$Name, [string[]]$Folders)
     $safe = Get-SafeProfileName $Name
     $dest = Join-Path (Get-ProfilesRoot) $safe
     if (Test-Path -LiteralPath $dest) {
@@ -360,9 +425,22 @@ function Save-ModProfile {
     $modsDest = Join-Path $dest "Mods"
     New-Item -ItemType Directory -Path $modsDest -Force | Out-Null
     $live = Get-ModsRoot
+    $offRoot = Join-Path $Script:SkateRoot "ModsDisabled"
     $names = New-Object System.Collections.Generic.List[string]
     Write-LogBox "Saving profile $safe"
-    foreach ($dir in @(Get-ChildItem -LiteralPath $live -Directory -ErrorAction SilentlyContinue)) {
+    $sources = @()
+    if ($Folders -and @($Folders).Count -gt 0) {
+        foreach ($folderName in $Folders) {
+            $livePath = Join-Path $live $folderName
+            $offPath = Join-Path $offRoot $folderName
+            if (Test-Path -LiteralPath $livePath) { $sources += Get-Item -LiteralPath $livePath }
+            elseif (Test-Path -LiteralPath $offPath) { $sources += Get-Item -LiteralPath $offPath }
+        }
+    }
+    else {
+        $sources = @(Get-ChildItem -LiteralPath $live -Directory -ErrorAction SilentlyContinue)
+    }
+    foreach ($dir in $sources) {
         Copy-Item -LiteralPath $dir.FullName -Destination (Join-Path $modsDest $dir.Name) -Recurse -Force
         $names.Add($dir.Name)
     }
@@ -383,6 +461,7 @@ function Save-ModProfile {
 
 function Install-ModProfile {
     param([string]$Name)
+    if (-not (Confirm-ReSkateForDownload)) { return }
     $dest = Join-Path (Get-ProfilesRoot) $Name
     $modsSrc = Join-Path $dest "Mods"
     if (-not (Test-Path -LiteralPath $modsSrc)) { throw "Profile $Name has no Mods folder." }
@@ -405,6 +484,45 @@ function Install-ModProfile {
     }
     Refresh-Installed
     Write-LogBox "Loaded profile $Name into Mods"
+}
+
+function Get-ProfileSelection {
+    $names = New-Object System.Collections.Generic.List[string]
+    if ($null -eq $profileList) { return @() }
+    foreach ($item in @($profileList.SelectedItems)) { [void]$names.Add([string]$item) }
+    if ($names.Count -eq 0 -and $null -ne $profileList.SelectedItem) { [void]$names.Add([string]$profileList.SelectedItem) }
+    return @($names)
+}
+
+function Set-ProfileMods {
+    param([string]$Name, [bool]$Enable)
+    $modsSrc = Join-Path (Join-Path (Get-ProfilesRoot) $Name) "Mods"
+    if (-not (Test-Path -LiteralPath $modsSrc)) { throw "Profile $Name has no mods." }
+    $live = Get-ModsRoot
+    $off = Get-ModsOffRoot
+    foreach ($dir in @(Get-ChildItem -LiteralPath $modsSrc -Directory -ErrorAction SilentlyContinue)) {
+        $toLive = Join-Path $live $dir.Name
+        $toOff = Join-Path $off $dir.Name
+        if ($Enable) {
+            if (Test-Path -LiteralPath $toOff) { Remove-Item -LiteralPath $toOff -Recurse -Force }
+            if (Test-Path -LiteralPath $toLive) { Remove-Item -LiteralPath $toLive -Recurse -Force }
+            Copy-Item -LiteralPath $dir.FullName -Destination $toLive -Recurse -Force
+        }
+        elseif (Test-Path -LiteralPath $toLive) {
+            if (Test-Path -LiteralPath $toOff) { Remove-Item -LiteralPath $toOff -Recurse -Force }
+            Move-Item -LiteralPath $toLive -Destination $toOff
+        }
+    }
+    $state = "Off"
+    if ($Enable) { $state = "On" }
+    Write-LogBox "$state profile $Name"
+}
+
+function Use-SelectedProfiles([bool]$Enable) {
+    $names = @(Get-ProfileSelection)
+    if ($names.Count -eq 0) { Write-LogBox "Select a profile."; return }
+    foreach ($name in $names) { Set-ProfileMods -Name $name -Enable $Enable }
+    Refresh-Installed
 }
 
 function Return-ToGameSelect {
@@ -493,8 +611,56 @@ function Copy-ModPayload {
     }
 }
 
+function Test-ReSkateReady {
+    if (-not $Script:SkateRoot) { return $false }
+    $dll = Join-Path $Script:SkateRoot "ReSkate.dll"
+    $launcher = Join-Path $Script:SkateRoot "ReSkateLauncher.exe"
+    return (Test-Path -LiteralPath $dll) -or (Test-Path -LiteralPath $launcher)
+}
+
+function Invoke-GameMode([string]$Mode) {
+    if (-not $Script:SkateRoot) { throw "Choose the Skate folder first." }
+    $unpacker = Join-Path $RepoRoot "Source\Setup\Install.ps1"
+    $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$unpacker`" -Action $Mode -Quiet -SkatePath `"$Script:SkateRoot`""
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $info.Arguments = $argLine
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($info)
+    if (-not $proc) { throw "Could not switch to $Mode." }
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) { throw "Could not switch to $Mode." }
+}
+
+function Confirm-ReSkateForDownload {
+    if ($Script:ReSkateDownloadOk -or (Test-ReSkateReady)) {
+        $Script:ReSkateDownloadOk = $true
+        return $true
+    }
+    if (-not $Script:SkateRoot) { throw "Choose the Skate folder first." }
+    $text = "Mods download only after ReSkate is turned on.`r`n`r`nYes turns ReSkate on, then the download starts.`r`nNo starts official Skate instead."
+    $answer = [System.Windows.Forms.MessageBox]::Show($form, $text, "ReSkate", "YesNo")
+    if ($answer -ne "Yes") {
+        $exe = Join-Path $Script:SkateRoot "Skate.exe"
+        if (-not (Test-Path -LiteralPath $exe)) { throw "Skate.exe was not found." }
+        Start-Process -FilePath $exe -WorkingDirectory $Script:SkateRoot
+        $form.Close()
+        return $false
+    }
+    $held = Test-Path -LiteralPath (Join-Path $Script:SkateRoot "ReSkate_Mode\mod\ReSkate.dll")
+    $action = "All"
+    if ($held) { $action = "ReSkate" }
+    Write-LogBox "Turning ReSkate on"
+    Invoke-GameMode $action
+    if (-not (Test-ReSkateReady)) { throw "ReSkate did not turn on, so the download was stopped." }
+    $Script:ReSkateDownloadOk = $true
+    return $true
+}
+
 function Install-LocalTree {
     param([string]$Path, [string]$FolderName)
+    if (-not (Confirm-ReSkateForDownload)) { return }
     $kindSource = $Path
     $work = $Path
     $temp = $null
@@ -582,49 +748,84 @@ function Show-DownloadBar([string]$Name, [int]$Percent) {
 }
 
 function Hide-DownloadBar {
+    $dlBar.Style = "Continuous"
     $dlHost.Visible = $false
     $dlBar.Value = 0
     $dlPct.Text = ""
     $dlName.Text = ""
 }
 
+function Get-CurlExe {
+    $cached = Join-Path $env:LOCALAPPDATA "ReSkateOverhaul\curl\curl.exe"
+    $system = Join-Path $env:SystemRoot "System32\curl.exe"
+    if (Test-Path -LiteralPath $system) { return $system }
+    if (Test-Path -LiteralPath $cached) { return $cached }
+    $cmd = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and (Test-Path -LiteralPath $cmd.Source)) { return $cmd.Source }
+    $zip = Join-Path $env:TEMP "reskate-curl.zip"
+    $stage = Join-Path $env:TEMP "reskate-curl"
+    Invoke-WebRequest -UseBasicParsing -Uri "https://curl.se/windows/latest.cgi?p=win64-mingw.zip" -OutFile $zip
+    if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
+    $found = Get-ChildItem -LiteralPath $stage -Recurse -Filter "curl.exe" | Select-Object -First 1
+    if (-not $found) { throw "The curl package did not include curl.exe." }
+    $dir = Split-Path -Parent $cached
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    Copy-Item -Path (Join-Path $found.DirectoryName "*") -Destination $dir -Force
+    if (-not (Test-Path -LiteralPath $cached)) { throw "curl.exe could not be saved." }
+    return $cached
+}
+
 function Receive-PackageFile([string]$Url, [string]$Destination, [string]$Name) {
-    $client = New-Object System.Net.WebClient
-    $client.Headers["User-Agent"] = "ReSkateMods"
-    $Script:DlDone = $false
-    $Script:DlError = $null
-    $client.Add_DownloadProgressChanged({
-        $pct = [int]$_.ProgressPercentage
-        $bar = $dlBar
-        $label = $dlPct
-        $apply = {
-            $safe = [Math]::Max(0, [Math]::Min(100, $pct))
-            if ($bar.Value -ne $safe) { $bar.Value = $safe }
-            $label.Text = "{0}%" -f $safe
-        }.GetNewClosure()
-        if ($bar.IsHandleCreated -and $bar.InvokeRequired) { [void]$bar.BeginInvoke($apply) }
-        else { & $apply }
-    }.GetNewClosure())
-    $client.Add_DownloadFileCompleted({
-        if ($_.Error) { $Script:DlError = [string]$_.Error.Message }
-        elseif ($_.Cancelled) { $Script:DlError = "Download cancelled." }
-        $Script:DlDone = $true
-    })
-    Show-DownloadBar $Name 0
+    $curl = Get-CurlExe
+    $partial = "$Destination.partial"
+    if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+    $total = [int64]0
     try {
-        $client.DownloadFileAsync([Uri]$Url, $Destination)
-        while (-not $Script:DlDone) {
-            [System.Windows.Forms.Application]::DoEvents()
-            Start-Sleep -Milliseconds 40
+        $head = & $curl -sI -L --max-time 20 -A "ReSkateMods" $Url
+        foreach ($line in @($head)) {
+            if ([string]$line -match '(?i)^Content-Length:\s*(\d+)') { $total = [int64]$Matches[1] }
         }
-        if ($Script:DlError) { throw $Script:DlError }
+    }
+    catch { $total = [int64]0 }
+    $dlBar.Style = "Continuous"
+    Show-DownloadBar $Name 0
+    if ($total -le 0) { $dlBar.Style = "Marquee"; $dlPct.Text = "" }
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $curl
+    $info.Arguments = "-sL --fail --retry 3 --retry-delay 2 -A ReSkateMods -o `"$partial`" `"$Url`""
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($info)
+    if (-not $proc) { throw "curl did not start." }
+    try {
+        while (-not $proc.HasExited) {
+            if ($total -gt 0 -and (Test-Path -LiteralPath $partial)) {
+                $len = [int64](Get-Item -LiteralPath $partial).Length
+                $pct = [int][Math]::Min(99, [Math]::Floor(($len * 100) / $total))
+                Show-DownloadBar $Name $pct
+            }
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 100
+        }
+        $proc.WaitForExit()
+        $got = (Test-Path -LiteralPath $partial) -and ((Get-Item -LiteralPath $partial).Length -gt 0)
+        if ($proc.ExitCode -ne 0 -or -not $got) { throw "Download failed." }
+        if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force }
+        Move-Item -LiteralPath $partial -Destination $Destination
+        $dlBar.Style = "Continuous"
         Show-DownloadBar $Name 100
     }
-    finally { $client.Dispose() }
+    finally {
+        if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
+        $dlBar.Style = "Continuous"
+        if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 function Install-StorePackage {
     param($Package, [switch]$Update)
+    if (-not (Confirm-ReSkateForDownload)) { return }
     $folder = "{0}-{1}" -f $Package.Owner, $Package.Name
     if ($Script:Installing.ContainsKey($folder)) { return }
     $Script:Installing[$folder] = $true
@@ -685,17 +886,148 @@ function Update-InstalledMods {
 }
 
 function Refresh-Installed {
+    if ($null -eq $installed) { return }
+    $installed.BeginUpdate()
     $installed.Items.Clear()
-    if (-not $Script:SkateRoot) { return }
-    $mods = Join-Path $Script:SkateRoot "Mods"
-    if (-not (Test-Path -LiteralPath $mods)) { return }
-    Get-ChildItem -LiteralPath $mods -Directory | ForEach-Object {
-        $installed.Items.Add($_.Name) | Out-Null
+    $rows = @()
+    if ($Script:SkateRoot) {
+        $mods = Join-Path $Script:SkateRoot "Mods"
+        $off = Join-Path $Script:SkateRoot "ModsDisabled"
+        if (Test-Path -LiteralPath $mods) {
+            foreach ($dir in @(Get-ChildItem -LiteralPath $mods -Directory -ErrorAction SilentlyContinue)) {
+                $rows += [pscustomobject]@{ Name = $dir.Name; On = $true }
+            }
+        }
+        if (Test-Path -LiteralPath $off) {
+            foreach ($dir in @(Get-ChildItem -LiteralPath $off -Directory -ErrorAction SilentlyContinue)) {
+                $rows += [pscustomobject]@{ Name = $dir.Name; On = $false }
+            }
+        }
     }
+    $Script:InstFromUs = $true
+    try {
+        foreach ($row in @($rows | Sort-Object Name)) {
+            $item = New-Object System.Windows.Forms.ListViewItem([string]$row.Name)
+            [void]$installed.Items.Add($item)
+            $item.Checked = [bool]$row.On
+        }
+    }
+    finally { $Script:InstFromUs = $false }
+    $installed.EndUpdate()
     if ($null -ne $installedEmpty) {
         $installedEmpty.Visible = ($installed.Items.Count -eq 0)
         if ($installedEmpty.Visible) { $installedEmpty.BringToFront() }
     }
+}
+
+function Get-InstalledPick {
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($row in @($installed.SelectedItems)) { [void]$names.Add([string]$row.Text) }
+    if ($names.Count -eq 0) {
+        foreach ($row in @($installed.CheckedItems)) { [void]$names.Add([string]$row.Text) }
+    }
+    return @($names)
+}
+
+function Save-ProfileFromSelection {
+    $picked = @(Get-InstalledPick)
+    if ($picked.Count -eq 0) { Write-LogBox "Check or select mods first."; return }
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $name = [Microsoft.VisualBasic.Interaction]::InputBox("Name this profile", "ReSkate", "")
+    if (-not $name -or -not $name.Trim()) { return }
+    Save-ModProfile -Name $name.Trim() -Folders $picked
+}
+
+function Add-ModsToProfile {
+    param([string]$Name, [string[]]$Folders)
+    $safe = Get-SafeProfileName $Name
+    $dest = Join-Path (Get-ProfilesRoot) $safe
+    $modsDest = Join-Path $dest "Mods"
+    if (-not (Test-Path -LiteralPath $modsDest)) { throw "Profile $safe has no mods folder." }
+    $live = Get-ModsRoot
+    $offRoot = Join-Path $Script:SkateRoot "ModsDisabled"
+    $added = 0
+    foreach ($folderName in @($Folders)) {
+        $livePath = Join-Path $live $folderName
+        $offPath = Join-Path $offRoot $folderName
+        $source = $null
+        if (Test-Path -LiteralPath $livePath) { $source = $livePath }
+        elseif (Test-Path -LiteralPath $offPath) { $source = $offPath }
+        if (-not $source) { continue }
+        $target = Join-Path $modsDest $folderName
+        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+        Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
+        $added++
+    }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in @(Get-ChildItem -LiteralPath $modsDest -Directory -ErrorAction SilentlyContinue)) {
+        [void]$names.Add($dir.Name)
+    }
+    $auto = $false
+    $metaPath = Join-Path $dest "profile.json"
+    if (Test-Path -LiteralPath $metaPath) {
+        try {
+            $old = Get-Content -LiteralPath $metaPath -Raw | ConvertFrom-Json
+            $flag = $old.PSObject.Properties["mods"]
+            if ($flag) { $auto = [bool]$flag.Value }
+        }
+        catch {}
+    }
+    @{
+        name    = $safe
+        savedAt = (Get-Date).ToString("o")
+        mods    = $auto
+        folders = @($names)
+    } | ConvertTo-Json | Set-Content -LiteralPath $metaPath -Encoding UTF8
+    Write-LogBox "Added $added mod(s) to profile $safe ($($names.Count) total)"
+    Refresh-Profiles
+}
+
+function Show-AddToProfile {
+    $picked = @(Get-InstalledPick)
+    if ($picked.Count -eq 0) { Write-LogBox "Check or select mods first."; return }
+    $profiles = @(Get-ChildItem -LiteralPath (Get-ProfilesRoot) -Directory -ErrorAction SilentlyContinue | Sort-Object Name)
+    if ($profiles.Count -eq 0) { Write-LogBox "No profiles yet. Create one first."; return }
+    $page = New-Object System.Windows.Forms.Form
+    $page.Text = "Add to profile"
+    $page.StartPosition = "CenterParent"
+    $page.FormBorderStyle = "FixedDialog"
+    $page.MaximizeBox = $false
+    $page.MinimizeBox = $false
+    $page.ShowInTaskbar = $false
+    $page.ClientSize = New-Object System.Drawing.Size(360, 420)
+    $page.BackColor = [System.Drawing.Color]::FromArgb(16, 16, 16)
+    $page.ForeColor = [System.Drawing.Color]::White
+    $list = New-Object System.Windows.Forms.ListBox
+    $list.Dock = "Fill"
+    $list.BorderStyle = "None"
+    $list.IntegralHeight = $false
+    $list.BackColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+    $list.ForeColor = [System.Drawing.Color]::White
+    $list.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+    foreach ($dir in $profiles) { [void]$list.Items.Add($dir.Name) }
+    $list.SelectedIndex = 0
+    $add = New-Object System.Windows.Forms.Button
+    $add.Text = "Add"
+    $add.Dock = "Bottom"
+    $add.Height = 36
+    $add.FlatStyle = "Flat"
+    $add.BackColor = [System.Drawing.Color]::FromArgb(232, 93, 4)
+    $add.ForeColor = [System.Drawing.Color]::White
+    $Script:ProfileAddNames = $picked
+    $Script:ProfileAddList = $list
+    $Script:ProfileAddPage = $page
+    $choose = {
+        $chosen = $Script:ProfileAddList.SelectedItem
+        if ($null -eq $chosen) { return }
+        Add-ModsToProfile -Name ([string]$chosen) -Folders $Script:ProfileAddNames
+        $Script:ProfileAddPage.Close()
+    }
+    $add.Add_Click($choose)
+    $list.Add_DoubleClick($choose)
+    $page.Controls.Add($list)
+    $page.Controls.Add($add)
+    [void]$page.ShowDialog($form)
 }
 
 function Add-StoreRow($pkg, [string]$Title, [string]$Category) {
@@ -813,13 +1145,8 @@ function Update-StoreEmpty {
     if ($show) { $emptyNote.BringToFront() }
 }
 
-function Load-Catalog {
-    Write-LogBox "Loading ReSkate Thunderstore catalog"
-    $client = New-Object System.Net.WebClient
-    $client.Headers["User-Agent"] = "ReSkateMods"
-    try { $raw = $client.DownloadString($StoreApi) }
-    finally { $client.Dispose() }
-    $rows = $raw | ConvertFrom-Json
+function Use-CatalogRaw([string]$Raw) {
+    $rows = $Raw | ConvertFrom-Json
     $list = New-Object System.Collections.Generic.List[object]
     $map = @{}
     foreach ($row in $rows) {
@@ -846,6 +1173,33 @@ function Load-Catalog {
     Write-LogBox ("Catalog ready: {0} mods. Recommended is the default list." -f $list.Count)
 }
 
+function Load-Catalog {
+    $cache = Join-Path $env:LOCALAPPDATA "ReSkateOverhaul\catalog\packages.json"
+    $saved = ""
+    if (Test-Path -LiteralPath $cache) {
+        try { $saved = [IO.File]::ReadAllText($cache) } catch { $saved = "" }
+    }
+    if ($saved) {
+        Write-LogBox "Loading saved catalog"
+        Use-CatalogRaw $saved
+    }
+    try {
+        Write-LogBox "Loading ReSkate Thunderstore catalog"
+        $client = New-Object System.Net.WebClient
+        $client.Headers["User-Agent"] = "ReSkateMods"
+        try { $raw = $client.DownloadString($StoreApi) }
+        finally { $client.Dispose() }
+        $dir = Split-Path $cache
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        [IO.File]::WriteAllText($cache, $raw)
+        Use-CatalogRaw $raw
+    }
+    catch {
+        if (-not $saved) { throw }
+        Write-LogBox "Catalog refresh failed. Using the saved copy."
+    }
+}
+
 function Set-SkateRoot {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath (Join-Path $Path "Skate.exe"))) {
@@ -861,6 +1215,15 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = "ReSkate  |  Mods"
 $form.Size = New-Object System.Drawing.Size(1080, 760)
 $form.StartPosition = "CenterScreen"
+$form.Opacity = 0
+try {
+    $form.GetType().GetProperty("DoubleBuffered", [Reflection.BindingFlags]"Instance,NonPublic").SetValue($form, $true, $null)
+} catch {}
+$form.Add_HandleCreated({
+    param($sender, $e)
+    try { [UiTheme]::DarkCaption($sender.Handle) } catch {}
+    try { [UiTheme]::SendMessagePtr($sender.Handle, 0x000B, [IntPtr]::Zero, [IntPtr]::Zero) } catch {}
+})
 $form.BackColor = [System.Drawing.Color]::FromArgb(16, 18, 22)
 $form.ForeColor = [System.Drawing.Color]::Gainsboro
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -871,7 +1234,7 @@ $edge = [System.Drawing.Color]::FromArgb(92, 92, 92)
 $form.BackColor = $bg
 $bgArt = Join-Path $RepoRoot "Assets\Backgrounds\mods.jpg"
 if (Test-Path -LiteralPath $bgArt) {
-    $form.BackgroundImage = [UiBackdrop]::Make($bgArt, 1080, 700)
+    $form.BackgroundImage = [UiBackdrop]::Load($bgArt, 1080, 700)
     $form.BackgroundImageLayout = "Stretch"
 }
 $form.ForeColor = [System.Drawing.Color]::White
@@ -949,7 +1312,10 @@ function Set-SoftList($Box) {
         $brush = New-Object System.Drawing.SolidBrush $fill
         $e.Graphics.FillRectangle($brush, $e.Bounds)
         $brush.Dispose()
-        $rect = New-Object System.Drawing.Rectangle ($e.Bounds.X + 12), $e.Bounds.Y, [Math]::Max(1, $e.Bounds.Width - 18), $e.Bounds.Height
+        $textX = [int]$e.Bounds.X + 12
+        $textW = [int]$e.Bounds.Width - 18
+        if ($textW -lt 1) { $textW = 1 }
+        $rect = [System.Drawing.Rectangle]::new($textX, [int]$e.Bounds.Y, $textW, [int]$e.Bounds.Height)
         $flags = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis -bor [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix
         [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, [string]$sender.Items[$e.Index], $sender.Font, $rect, [System.Drawing.Color]::White, $flags)
     }.GetNewClosure())
@@ -964,7 +1330,7 @@ function New-ListShell($Box, [string]$EmptyText) {
     $Box.Dock = "Fill"
     $hostPanel.Controls.Add($Box)
     $hostPanel.Controls.Add($label)
-    $hostPanel.Add_Resize({ Sync-Overlay $hostPanel $label }.GetNewClosure())
+    $hostPanel.Add_Resize({ $label.SetBounds(0, 0, $hostPanel.ClientSize.Width, $hostPanel.ClientSize.Height) }.GetNewClosure())
     $shell = New-Object RoundField
     $shell.Dock = "Fill"
     $shell.Radius = 14
@@ -1147,6 +1513,7 @@ $store = New-Object System.Windows.Forms.ListView
 $store.Dock = "Fill"
 $store.View = "Details"
 $store.FullRowSelect = $true
+$store.MultiSelect = $true
 $store.CheckBoxes = $true
 $store.BorderStyle = "None"
 $store.BackColor = $panelBg
@@ -1183,6 +1550,70 @@ foreach ($pair in @(
     if ($pair.Text -eq "Category") { $catHeader = $label }
     $colHead.Controls.Add($label)
 }
+$Script:CheckAnchor = 0
+$Script:PendingCheck = $null
+$Script:CheckFromUs = $false
+$store.Add_ItemCheck({
+    param($sender, $e)
+    if (-not $Script:CheckFromUs) { $e.NewValue = $e.CurrentValue }
+})
+$store.Add_MouseDown({
+    param($sender, $e)
+    if ($e.Button -ne "Left") { return }
+    $hit = $sender.HitTest($e.Location)
+    if ($null -eq $hit.Item) { $Script:PendingCheck = $null; return }
+    $mods = [System.Windows.Forms.Control]::ModifierKeys
+    $Script:PendingCheck = @{
+        Index = $hit.Item.Index
+        Was   = [bool]$hit.Item.Checked
+        Shift = (($mods -band [System.Windows.Forms.Keys]::Shift) -ne 0)
+        Ctrl  = (($mods -band [System.Windows.Forms.Keys]::Control) -ne 0)
+    }
+})
+$store.Add_MouseUp({
+    param($sender, $e)
+    $pending = $Script:PendingCheck
+    $Script:PendingCheck = $null
+    if ($e.Button -ne "Left" -or $null -eq $pending) { return }
+    $hit = $sender.HitTest($e.Location)
+    if ($null -eq $hit.Item -or $hit.Item.Index -ne $pending.Index) { return }
+    $onBox = (($hit.Location -band [System.Windows.Forms.ListViewHitTestLocations]::StateImage) -ne 0)
+    if (-not $onBox) {
+        $row = $hit.Item.GetBounds([System.Windows.Forms.ItemBoundsPortion]::Entire)
+        $onBox = ($e.X -ge $row.X -and $e.X -lt ($row.X + 28))
+    }
+    $Script:CheckFromUs = $true
+    try {
+        if ($pending.Shift) {
+            $start = [Math]::Min($Script:CheckAnchor, $pending.Index)
+            $end = [Math]::Max($Script:CheckAnchor, $pending.Index)
+            if ($onBox) {
+                for ($i = 0; $i -lt $sender.Items.Count; $i++) {
+                    $sender.Items[$i].Selected = ($i -ge $start -and $i -le $end)
+                }
+            }
+            for ($i = $start; $i -le $end; $i++) { $sender.Items[$i].Checked = $true }
+            $sender.Items[$pending.Index].Focused = $true
+        }
+        else {
+            $item = $sender.Items[$pending.Index]
+            if ($onBox) {
+                if ($pending.Ctrl) { $item.Selected = -not [bool]$item.Selected }
+                else {
+                    foreach ($other in @($sender.SelectedItems)) {
+                        if ($other.Index -ne $pending.Index) { $other.Selected = $false }
+                    }
+                    $item.Selected = $true
+                }
+                $item.Focused = $true
+            }
+            $item.Checked = -not $pending.Was
+            $Script:CheckAnchor = $pending.Index
+        }
+        $sender.Invalidate()
+    }
+    finally { $Script:CheckFromUs = $false }
+})
 $store.Add_DrawColumnHeader({ param($sender, $e) $e.DrawDefault = $false })
 $store.Add_DrawItem({ })
 $store.Add_DrawSubItem({
@@ -1197,7 +1628,11 @@ $store.Add_DrawSubItem({
     $brush.Dispose()
     $left = 8
     if ($e.ColumnIndex -eq 0 -and $sender.CheckBoxes) {
-        $box = New-Object System.Drawing.Rectangle ($e.Bounds.X + 6), ($e.Bounds.Y + [Math]::Max(0, ($e.Bounds.Height - 16) / 2)), 16, 16
+        $boxX = [int]$e.Bounds.X + 6
+        $boxGap = [int]$e.Bounds.Height - 16
+        if ($boxGap -lt 0) { $boxGap = 0 }
+        $boxY = [int]$e.Bounds.Y + [int]($boxGap / 2)
+        $box = [System.Drawing.Rectangle]::new($boxX, $boxY, 16, 16)
         if ([System.Windows.Forms.Application]::RenderWithVisualStyles) {
             $mark = [System.Windows.Forms.VisualStyles.VisualStyleElement]::Button.CheckBox.UncheckedNormal
             if ($e.Item.Checked) { $mark = [System.Windows.Forms.VisualStyles.VisualStyleElement]::Button.CheckBox.CheckedNormal }
@@ -1211,7 +1646,10 @@ $store.Add_DrawSubItem({
         }
         $left = 28
     }
-    $textRect = New-Object System.Drawing.Rectangle ($e.Bounds.X + $left), $e.Bounds.Y, [Math]::Max(1, $e.Bounds.Width - $left - 6), $e.Bounds.Height
+    $textX = [int]$e.Bounds.X + $left
+    $textW = [int]$e.Bounds.Width - $left - 6
+    if ($textW -lt 1) { $textW = 1 }
+    $textRect = [System.Drawing.Rectangle]::new($textX, [int]$e.Bounds.Y, $textW, [int]$e.Bounds.Height)
     $flags = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis -bor [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix
     [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.SubItem.Text, $sender.Font, $textRect, [System.Drawing.Color]::White, $flags)
 })
@@ -1298,7 +1736,7 @@ $countLabel.Text = "0 packages"
 $countLabel.ForeColor = [System.Drawing.Color]::FromArgb(190, 190, 190)
 $countLabel.BackColor = [System.Drawing.Color]::Transparent
 $countLabel.Padding = New-Object System.Windows.Forms.Padding(0, 8, 12, 0)
-$addBtn = New-FlatButton "Pull checked" 120
+$addBtn = New-FlatButton "Download" 120
 $openBtn = New-FlatButton "Open page" 110
 $localBtn = New-FlatButton "Add zip or folder" 140
 $autoMods = New-Object System.Windows.Forms.CheckBox
@@ -1345,7 +1783,7 @@ $resultHost.BackColor = $panelBg
 $store.Dock = "Fill"
 $resultHost.Controls.Add($store)
 $resultHost.Controls.Add($emptyNote)
-$resultHost.Add_Resize({ Sync-Overlay $resultHost $emptyNote })
+$resultHost.Add_Resize({ $emptyNote.SetBounds(0, 0, $resultHost.ClientSize.Width, $resultHost.ClientSize.Height) }.GetNewClosure())
 $listShell = New-Object RoundField
 $listShell.Dock = "Fill"
 $listShell.Radius = 14
@@ -1360,20 +1798,178 @@ $storeLayout.SetRowSpan($listShell, 2)
 $storeLayout.Controls.Add($storeButtons, 0, 4)
 $storeLayout.Controls.Add($pasteField, 0, 5)
 $storeTab.Controls.Add($storeLayout)
+$actionBar = New-Object System.Windows.Forms.FlowLayoutPanel
+$actionBar.Dock = "Bottom"
+$actionBar.Height = 46
+$actionBar.WrapContents = $false
+$actionBar.FlowDirection = "LeftToRight"
+$actionBar.BackColor = $bg
+$actionBar.Padding = New-Object System.Windows.Forms.Padding(0, 6, 0, 0)
+$profileQuick = New-Object System.Windows.Forms.TextBox
+$profileQuick.Width = 180
+$profileQuick.Height = 28
+$profileQuick.BorderStyle = "FixedSingle"
+$profileQuick.BackColor = $panelBg
+$profileQuick.ForeColor = [System.Drawing.Color]::White
+$saveQuick = New-FlatButton "Save profile" 120
+$loadQuick = New-FlatButton "Load profile" 120
+$saveQuick.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+$loadQuick.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+$profileQuick.Margin = New-Object System.Windows.Forms.Padding(16, 2, 0, 0)
+$actionBar.Controls.Add($addBtn)
+$actionBar.Controls.Add($openBtn)
+$actionBar.Controls.Add($localBtn)
+$actionBar.Controls.Add($profileQuick)
+$actionBar.Controls.Add($saveQuick)
+$actionBar.Controls.Add($loadQuick)
+$storeTab.Controls.Add($actionBar)
+$saveQuick.Add_Click({
+    try {
+        $profileName.Text = $profileQuick.Text
+        Save-ModProfile $profileQuick.Text
+    }
+    catch { Write-LogBox $_.Exception.Message }
+})
+$loadQuick.Add_Click({
+    $name = $profileQuick.Text.Trim()
+    if (-not $name -and $null -ne $profileList.SelectedItem) { $name = [string]$profileList.SelectedItem }
+    if (-not $name) { Write-LogBox "Type a profile name, then Load profile."; return }
+    try { Install-ModProfile $name }
+    catch { Write-LogBox $_.Exception.Message }
+})
 Show-ModsPage "Recommended"
 
-$installed = New-Object System.Windows.Forms.ListBox
+$installed = New-Object System.Windows.Forms.ListView
 $installed.Dock = "Fill"
+$installed.View = "Details"
+$installed.CheckBoxes = $true
+$installed.FullRowSelect = $true
+$installed.MultiSelect = $true
+$installed.HeaderStyle = "None"
 $installed.BorderStyle = "None"
+$installed.HideSelection = $false
 $installed.BackColor = $panelBg
 $installed.ForeColor = [System.Drawing.Color]::White
 $installed.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-$installedPack = New-ListShell $installed "No mods installed"
-$installedEmpty = $installedPack.Empty
+[void]$installed.Columns.Add("Mod", 980)
+$installedEmpty = New-EmptyLabel "No mods installed"
+$installedHost = New-Object System.Windows.Forms.Panel
+$installedHost.Dock = "Fill"
+$installedHost.BackColor = $panelBg
+$installedHost.Controls.Add($installed)
+$installedHost.Controls.Add($installedEmpty)
+$installedHost.Add_Resize({ $installedEmpty.SetBounds(0, 0, $installedHost.ClientSize.Width, $installedHost.ClientSize.Height) }.GetNewClosure())
+$installedShell = New-Object RoundField
+$installedShell.Dock = "Fill"
+$installedShell.Radius = 14
+$installedShell.Padding = New-Object System.Windows.Forms.Padding(1)
+$installedShell.BackColor = $panelBg
+$installedShell.Controls.Add($installedHost)
+$Script:InstAnchor = 0
+$Script:InstPending = $null
+$Script:InstFromUs = $false
+$installed.Add_ItemCheck({
+    param($sender, $e)
+    if (-not $Script:InstFromUs) { $e.NewValue = $e.CurrentValue }
+})
+$installed.Add_MouseDown({
+    param($sender, $e)
+    $hit = $sender.HitTest($e.Location)
+    if ($e.Button -eq "Right") {
+        if ($null -ne $hit.Item -and -not $hit.Item.Selected) {
+            $sender.SelectedItems.Clear()
+            $hit.Item.Selected = $true
+        }
+        return
+    }
+    if ($e.Button -ne "Left") { return }
+    if ($null -eq $hit.Item) { $Script:InstPending = $null; return }
+    $mods = [System.Windows.Forms.Control]::ModifierKeys
+    $Script:InstPending = @{
+        Index = $hit.Item.Index
+        Was   = [bool]$hit.Item.Checked
+        Shift = (($mods -band [System.Windows.Forms.Keys]::Shift) -ne 0)
+    }
+})
+$installed.Add_MouseUp({
+    param($sender, $e)
+    $pending = $Script:InstPending
+    $Script:InstPending = $null
+    if ($e.Button -ne "Left" -or $null -eq $pending) { return }
+    $hit = $sender.HitTest($e.Location)
+    if ($null -eq $hit.Item -or $hit.Item.Index -ne $pending.Index) { return }
+    $Script:InstFromUs = $true
+    try {
+        if ($pending.Shift) {
+            $start = [Math]::Min($Script:InstAnchor, $pending.Index)
+            $end = [Math]::Max($Script:InstAnchor, $pending.Index)
+            for ($i = 0; $i -lt $sender.Items.Count; $i++) {
+                $in = ($i -ge $start -and $i -le $end)
+                $sender.Items[$i].Selected = $in
+                if ($in) {
+                    $sender.Items[$i].Checked = $true
+                    Sync-InstalledItem $sender.Items[$i]
+                }
+            }
+        }
+        else {
+            $item = $sender.Items[$pending.Index]
+            foreach ($other in @($sender.SelectedItems)) {
+                if ($other.Index -ne $pending.Index) { $other.Selected = $false }
+            }
+            $item.Selected = $true
+            $item.Checked = -not $pending.Was
+            $Script:InstAnchor = $pending.Index
+            Sync-InstalledItem $item
+        }
+    }
+    finally { $Script:InstFromUs = $false }
+})
+$installedMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$installedMenu.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
+$installedMenu.ForeColor = [System.Drawing.Color]::White
+$installedMenu.ShowImageMargin = $false
+function New-InstalledCommand([string]$Text, [scriptblock]$Action) {
+    $item = New-Object System.Windows.Forms.ToolStripMenuItem $Text
+    $item.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
+    $item.ForeColor = [System.Drawing.Color]::White
+    $item.Add_Click($Action)
+    return $item
+}
+[void]$installedMenu.Items.Add((New-InstalledCommand "Activate" {
+    $Script:InstFromUs = $true
+    try {
+        foreach ($row in @($installed.SelectedItems)) { $row.Checked = $true; Sync-InstalledItem $row }
+    }
+    finally { $Script:InstFromUs = $false }
+}))
+[void]$installedMenu.Items.Add((New-InstalledCommand "Deactivate" {
+    $Script:InstFromUs = $true
+    try {
+        foreach ($row in @($installed.SelectedItems)) { $row.Checked = $false; Sync-InstalledItem $row }
+    }
+    finally { $Script:InstFromUs = $false }
+}))
+[void]$installedMenu.Items.Add((New-InstalledCommand "Create profile from selection" { Save-ProfileFromSelection }))
+[void]$installedMenu.Items.Add((New-InstalledCommand "Add to profile" { Show-AddToProfile }))
+[void]$installedMenu.Items.Add((New-InstalledCommand "Remove" {
+    $picked = @(Get-InstalledPick)
+    if ($picked.Count -eq 0) { return }
+    $answer = [System.Windows.Forms.MessageBox]::Show("Remove $($picked.Count) mod(s)?", "ReSkate", "YesNo")
+    if ($answer -ne "Yes") { return }
+    foreach ($name in $picked) {
+        foreach ($root in @((Join-Path $Script:SkateRoot "Mods"), (Join-Path $Script:SkateRoot "ModsDisabled"))) {
+            $path = Join-Path $root $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+        }
+        Write-LogBox "Removed $name"
+    }
+    Refresh-Installed
+}))
+$installed.ContextMenuStrip = $installedMenu
 $removeBtn = New-FlatButton "Remove selected" 150
 $removeBtn.Dock = "Fill"
 $removeBtn.Height = 34
-$installed.Dock = "Fill"
 $installedLayout = New-Object GlassTable
 $installedLayout.Dock = "Fill"
 $installedLayout.ColumnCount = 1
@@ -1382,7 +1978,7 @@ $installedLayout.BackColor = $bg
 [void]$installedLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void]$installedLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void]$installedLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 44)))
-$installedLayout.Controls.Add($installedPack.Shell, 0, 0)
+$installedLayout.Controls.Add($installedShell, 0, 0)
 $installedLayout.Controls.Add($removeBtn, 0, 1)
 $installedTab.Controls.Add($installedLayout)
 
@@ -1396,7 +1992,7 @@ $profileName.Dock = "Fill"
 $profileName.BorderStyle = "FixedSingle"
 $profileName.BackColor = $panelBg
 $profileName.ForeColor = [System.Drawing.Color]::White
-$saveProfileBtn = New-FlatButton "Save" 88
+$saveProfileBtn = New-FlatButton "Save profile" 120
 $saveProfileBtn.Dock = "Right"
 $saveProfileBtn.Height = 28
 $nameRow = New-Object GlassPanel
@@ -1411,9 +2007,34 @@ $profileList.BorderStyle = "None"
 $profileList.BackColor = $panelBg
 $profileList.ForeColor = [System.Drawing.Color]::White
 $profileList.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$profileList.SelectionMode = "MultiExtended"
 $profilePack = New-ListShell $profileList "No profiles saved"
 $profileEmpty = $profilePack.Empty
-$loadProfileBtn = New-FlatButton "Load" 110
+$profileList.Add_MouseDown({
+    param($sender, $e)
+    if ($e.Button -ne "Right") { return }
+    $index = $sender.IndexFromPoint($e.Location)
+    if ($index -lt 0) { return }
+    if (-not $sender.GetSelected($index)) {
+        $sender.ClearSelected()
+        $sender.SetSelected($index, $true)
+    }
+})
+$profileMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$profileMenu.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
+$profileMenu.ForeColor = [System.Drawing.Color]::White
+$profileMenu.ShowImageMargin = $false
+function New-ProfileCommand([string]$Text, [scriptblock]$Action) {
+    $item = New-Object System.Windows.Forms.ToolStripMenuItem $Text
+    $item.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
+    $item.ForeColor = [System.Drawing.Color]::White
+    $item.Add_Click($Action)
+    return $item
+}
+[void]$profileMenu.Items.Add((New-ProfileCommand "Activate" { try { Use-SelectedProfiles $true } catch { Write-LogBox $_.Exception.Message } }))
+[void]$profileMenu.Items.Add((New-ProfileCommand "Deactivate" { try { Use-SelectedProfiles $false } catch { Write-LogBox $_.Exception.Message } }))
+$profileList.ContextMenuStrip = $profileMenu
+$loadProfileBtn = New-FlatButton "Load profile" 130
 $loadProfileBtn.Height = 32
 $loadProfileBtn.Margin = New-Object System.Windows.Forms.Padding(0, 4, 8, 0)
 $deleteProfileBtn = New-FlatButton "Delete" 110
@@ -1633,9 +2254,9 @@ $store.Add_MouseLeave({
 $installed.Add_MouseMove({
     param($sender, $e)
     $pkg = $null
-    $index = $installed.IndexFromPoint($e.Location)
-    if ($index -ge 0) {
-        $name = [string]$installed.Items[$index]
+    $hit = $installed.HitTest($e.Location)
+    if ($null -ne $hit.Item) {
+        $name = [string]$hit.Item.Text
         if ($Script:ByFull.ContainsKey($name)) { $pkg = $Script:ByFull[$name] }
     }
     $Script:ThumbPkg = $pkg
@@ -1717,12 +2338,17 @@ $localBtn.Add_Click({
 })
 
 $removeBtn.Add_Click({
-    if ($installed.SelectedItem -eq $null) { return }
-    $name = [string]$installed.SelectedItem
-    $answer = [System.Windows.Forms.MessageBox]::Show("Remove Mods\$name ?", "ReSkate", "YesNo")
+    $picked = @(Get-InstalledPick)
+    if ($picked.Count -eq 0) { return }
+    $answer = [System.Windows.Forms.MessageBox]::Show("Remove $($picked.Count) mod(s)?", "ReSkate", "YesNo")
     if ($answer -ne "Yes") { return }
-    Remove-Item -LiteralPath (Join-Path (Get-ModsRoot) $name) -Recurse -Force
-    Write-LogBox "Removed $name"
+    foreach ($name in $picked) {
+        foreach ($root in @((Join-Path $Script:SkateRoot "Mods"), (Join-Path $Script:SkateRoot "ModsDisabled"))) {
+            $path = Join-Path $root $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+        }
+        Write-LogBox "Removed $name"
+    }
     Refresh-Installed
 })
 
@@ -1731,27 +2357,26 @@ $saveProfileBtn.Add_Click({
     catch { Write-LogBox $_.Exception.Message }
 })
 $loadProfileBtn.Add_Click({
-    if ($null -eq $profileList.SelectedItem) {
-        Write-LogBox "Select a profile."
-        return
-    }
-    try { Install-ModProfile ([string]$profileList.SelectedItem) }
+    try { Use-SelectedProfiles $true }
     catch { Write-LogBox $_.Exception.Message }
 })
 $deleteProfileBtn.Add_Click({
-    if ($null -eq $profileList.SelectedItem) { return }
-    $name = [string]$profileList.SelectedItem
-    $answer = [System.Windows.Forms.MessageBox]::Show("Delete profile $name ?", "ReSkate", "YesNo")
+    $names = @(Get-ProfileSelection)
+    if ($names.Count -eq 0) { return }
+    $answer = [System.Windows.Forms.MessageBox]::Show("Delete $($names.Count) profile(s)?", "ReSkate", "YesNo")
     if ($answer -ne "Yes") { return }
-    Remove-Item -LiteralPath (Join-Path (Get-ProfilesRoot) $name) -Recurse -Force
-    if ($profileName.Text -eq $name) { $profileName.Clear() }
+    foreach ($name in $names) {
+        Remove-Item -LiteralPath (Join-Path (Get-ProfilesRoot) $name) -Recurse -Force
+        if ($profileName.Text -eq $name) { $profileName.Clear() }
+        Write-LogBox "Deleted profile $name"
+    }
     Refresh-Profiles
-    Write-LogBox "Deleted profile $name"
 })
 $profileList.Add_SelectedIndexChanged({
     if ($null -ne $profileList.SelectedItem) { $profileName.Text = [string]$profileList.SelectedItem }
 })
 
+$Script:ReSkateDownloadOk = $false
 $Script:ModsClaimed = $false
 $Script:ModsPhase = 0.0
 $Script:ModsHiding = $false
@@ -1777,31 +2402,33 @@ $borderTimer.Add_Tick({
 })
 $clickWatch = New-Object ClickWatch
 $clickWatch.Add_Pressed({ Stop-ModsBorder })
-$form.Add_Deactivate({
-    if ($Script:ModsHiding -or $form.WindowState -eq "Minimized") { return }
-    foreach ($owned in @($form.OwnedForms)) {
-        if ($owned.Visible) { return }
-    }
-    $front = [WinFocus]::GetForegroundWindow()
-    if ([WinFocus]::GetWindow($front, 4) -eq $form.Handle) { return }
-    $Script:ModsHiding = $true
-    $form.WindowState = "Minimized"
-    $Script:ModsHiding = $false
-})
 $form.Add_Shown({
     try {
         [UiTheme]::DarkCaption($form.Handle)
         $clickWatch.AssignHandle($form.Handle)
-        $borderTimer.Start()
         foreach ($scroll in @($store, $installed, $profileList, $logBox, $filter, $paste, $pathBox, $profileName)) {
             [UiTheme]::DarkScroll($scroll.Handle)
         }
         [void][UiTheme]::SendMessage($filter.Handle, 0x1501, [IntPtr]1, "Search recommended")
         [void][UiTheme]::SendMessage($paste.Handle, 0x1501, [IntPtr]1, "Paste a Thunderstore link")
         [void][UiTheme]::SendMessage($profileName.Handle, 0x1501, [IntPtr]1, "Profile name")
-        $found = @(Find-SkateRoots)
-        if ($found.Count -ge 1) { Set-SkateRoot $found[0] }
-        else { Write-LogBox "Skate.exe was not found. Set the folder that contains it." }
+        $form.PerformLayout()
+    }
+    catch { Write-LogBox $_.Exception.Message }
+    finally {
+        try { [UiTheme]::SendMessagePtr($form.Handle, 0x000B, [IntPtr]1, [IntPtr]::Zero) } catch {}
+        $form.Opacity = 1
+        $form.Refresh()
+    }
+    try {
+        if ($SkatePath -and (Test-Path -LiteralPath (Join-Path $SkatePath "Skate.exe"))) {
+            Set-SkateRoot $SkatePath
+        }
+        else {
+            $found = @(Find-SkateRoots)
+            if ($found.Count -ge 1) { Set-SkateRoot $found[0] }
+            else { Write-LogBox "Skate.exe was not found. Set the folder that contains it." }
+        }
         Load-Catalog
         if ($autoMods.Checked) { Update-InstalledMods }
     }

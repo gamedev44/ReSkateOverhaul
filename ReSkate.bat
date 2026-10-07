@@ -5,14 +5,14 @@ title ReSkate
 
 if /I "%~1"=="allow" goto :allow
 
-set "DRIVEARG="
-echo %~1| findstr /R /I "^[A-Z]$" >nul && set "DRIVEARG=-Drive %~1"
-
-start "" "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0Source\Launch\Select.ps1" %DRIVEARG%
+set "RESKATE_SCRIPT=%~dp0Source\Launch\Select.ps1"
+set "EXTRA="
+echo %~1| findstr /R /I "^[A-Z]$" >nul && set "EXTRA=-Drive %~1"
+start "ReSkate" "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -File "%RESKATE_SCRIPT%" %EXTRA%
 goto :eof
 
 :allow
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Source\Setup\Allow.ps1" -RepoRoot "%~dp0"
+"%~dp0Source\Setup\ReSkate.exe" -RepoRoot "%~dp0"
 if errorlevel 1 (
   echo.
   echo Windows antivirus exclusion was not added.
