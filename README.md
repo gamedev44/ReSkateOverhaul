@@ -1,5 +1,8 @@
 # ReSkate
 
+<img width="1024" height="1024" alt="ReSkate Logo" src="https://github.com/user-attachments/assets/2ce77b81-9156-4665-8eb1-fd4361376e76" />
+
+
 **ReSkate** is an overhaul mod for *Skate (4)* featuring offline mode play, community-dedicated servers, and custom map/mod support.
 
 ---
