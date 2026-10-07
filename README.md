@@ -103,7 +103,8 @@ The installer copies `LICENSE.txt` and `licenses\` into the Skate folder with th
 
 ## Download (Latest Release Link)
 
-`ReSkate.bat` downloads the latest zip from [ReSkate](https://github.com/gamedev44/ReSkateOverhaul/archive/refs/heads/main.zip).
+`ReSkate.bat` downloads the latest zip from Below
+## [Click Here to Download ReSkate Directly](https://github.com/gamedev44/ReSkateOverhaul/archive/refs/heads/main.zip).
 
 ## Contributors Credits
 
