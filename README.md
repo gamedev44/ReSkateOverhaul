@@ -17,6 +17,7 @@
 - [Mods (Maps, Scripts, Etc...)](#mods-maps-scripts-etc)
 - [License & Third-Party Dependencies](#license--third-party-dependencies)
 - [Download (Latest Release Link)](#download-latest-release-link)
+- [Contributors Credits](#download-latest-release-link)
 
 ---
 
@@ -102,6 +103,31 @@ The installer copies `LICENSE.txt` and `licenses\` into the Skate folder with th
 
 ## Download (Latest Release Link)
 
-`ReSkate.bat` downloads the latest zip from [Dingo-Shenanigans/ReSkate](https://github.com/Dingo-Shenanigans/ReSkate/releases/latest).
+`ReSkate.bat` downloads the latest zip from [ReSkate](https://github.com/gamedev44/ReSkateOverhaul/archive/refs/heads/main.zip).
+
+## Contributors Credits
+
+* [@IronWillInteractive](https://www.google.com/search?q=https://github.com/IronWillInteractive)
+* [@Dingo-Shenanigans](https://github.com/Dingo-Shenanigans)
+* [@zeex64](https://github.com/zeex64)
+* [@claude](https://github.com/claude)
+* [@Gamedev44](https://www.google.com/search?q=https://github.com/Gamedev44)
+* [@gpt](https://www.google.com/search?q=https://github.com/gpt)
+* [@xThrasherrr](https://github.com/xThrasherrr)
+* [@jnslol](https://www.google.com/search?q=https://github.com/jnslol)
+* [@DeckardDetribine](https://github.com/DeckardDetribine)
+* [@ReGlitched](https://www.google.com/search?q=https://github.com/ReGlitched)
+* [@lennyblk](https://github.com/lennyblk)
+* [@VexFlint](https://www.google.com/search?q=https://github.com/VexFlint)
+* [@Bortlesboat](https://github.com/Bortlesboat)
+* [@worthlessnorms](https://github.com/worthlessnorms)
+* [@Wackyhcky](https://www.google.com/search?q=https://github.com/Wackyhcky)
+* [@moelrobi](https://www.google.com/search?q=https://github.com/moelrobi)
+* [@Vebjorhk](https://www.google.com/search?q=https://github.com/Vebjorhk)
+* [@wishluna](https://www.google.com/search?q=https://github.com/wishluna)
+
+---
+
+> A heartfelt thank you to everyone listed above. Every single line of code, fix, and contribution—big or small—made this project possible and necessary. Your time, energy, and work are deeply appreciated!
 
 ---
