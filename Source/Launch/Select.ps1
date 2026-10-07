@@ -558,6 +558,80 @@ public class SessionCard : Control {
   }
 }
 "@
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ExplorerFolder {
+  public static string Pick(IntPtr owner, string title, string initial) {
+    var dialog = (IFileOpenDialog)new FileOpenDialog();
+    uint options;
+    dialog.GetOptions(out options);
+    dialog.SetOptions(options | 0x20u | 0x40u | 0x800u | 0x8u);
+    if (!string.IsNullOrEmpty(title)) dialog.SetTitle(title);
+    dialog.SetOkButtonLabel("Open");
+    if (!string.IsNullOrEmpty(initial) && System.IO.Directory.Exists(initial)) {
+      Guid iid = typeof(IShellItem).GUID;
+      IShellItem start;
+      if (SHCreateItemFromParsingName(initial, IntPtr.Zero, ref iid, out start) == 0 && start != null)
+        dialog.SetFolder(start);
+    }
+    int hr = dialog.Show(owner);
+    if (hr == unchecked((int)0x800704C7)) return null;
+    if (hr != 0) Marshal.ThrowExceptionForHR(hr);
+    IShellItem result;
+    dialog.GetResult(out result);
+    IntPtr name;
+    result.GetDisplayName(0x80058000, out name);
+    try { return Marshal.PtrToStringUni(name); }
+    finally { if (name != IntPtr.Zero) Marshal.FreeCoTaskMem(name); }
+  }
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+  static extern int SHCreateItemFromParsingName(
+    [MarshalAs(UnmanagedType.LPWStr)] string pszPath,
+    IntPtr pbc,
+    ref Guid riid,
+    [MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
+}
+[ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+public class FileOpenDialog {}
+[ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IShellItem {
+  void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+  void GetParent(out IShellItem ppsi);
+  void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+  void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+  void Compare(IShellItem psi, uint hint, out int piOrder);
+}
+[ComImport, Guid("d57c7288-d4ad-4768-be02-9d969532d960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IFileOpenDialog {
+  [PreserveSig] int Show(IntPtr parent);
+  void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+  void SetFileTypeIndex(uint iFileType);
+  void GetFileTypeIndex(out uint piFileType);
+  void Advise(IntPtr pfde, out uint pdwCookie);
+  void Unadvise(uint dwCookie);
+  void SetOptions(uint fos);
+  void GetOptions(out uint pfos);
+  void SetDefaultFolder(IShellItem psi);
+  void SetFolder(IShellItem psi);
+  void GetFolder(out IShellItem ppsi);
+  void GetCurrentSelection(out IShellItem ppsi);
+  void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+  void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+  void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+  void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+  void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+  void GetResult(out IShellItem ppsi);
+  void AddPlace(IShellItem psi, uint fdap);
+  void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+  void Close(int hr);
+  void SetClientGuid(ref Guid guid);
+  void ClearClientData();
+  void SetFilter(IntPtr pFilter);
+  void GetResults(out IntPtr ppenum);
+  void GetSelectedItems(out IntPtr ppsai);
+}
+"@
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
@@ -577,15 +651,18 @@ function Find-SkateRoots {
         $clean = ($Drive.ToUpper() -replace "[^A-Z]", "")
         if ($clean.Length -ge 1) { $letters.Add($clean.Substring(0, 1)) }
     }
-    foreach ($disk in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3")) {
-        $letters.Add($disk.DeviceID.TrimEnd(":").Substring(0, 1))
+    foreach ($disk in [System.IO.DriveInfo]::GetDrives()) {
+        if ($disk.DriveType -ne [System.IO.DriveType]::Fixed -or -not $disk.IsReady) { continue }
+        $letters.Add($disk.Name.Substring(0, 1))
     }
     foreach ($letter in ($letters | Select-Object -Unique)) {
         foreach ($rel in $rels) {
             $path = "{0}:\{1}" -f $letter, $rel
             if (Test-Path -LiteralPath (Join-Path $path "Skate.exe")) {
-                $full = [IO.Path]::GetFullPath($path)
-                if (-not $hits.Contains($full)) { $hits.Add($full) }
+                $full = [IO.Path]::GetFullPath($path).TrimEnd("\")
+                $seen = $false
+                foreach ($item in $hits) { if ($item -ieq $full) { $seen = $true; break } }
+                if (-not $seen) { $hits.Add($full) }
             }
         }
     }
@@ -670,7 +747,7 @@ function New-LogoCard {
 
 function Get-ReSkateSettings {
     $path = Join-Path $RepoRoot "ReSkate.settings.json"
-    $settings = @{ reskate = $false; mods = $false }
+    $settings = @{ reskate = $false; mods = $false; allowed = @() }
     if (-not (Test-Path -LiteralPath $path)) { return $settings }
     try {
         $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
@@ -678,6 +755,8 @@ function Get-ReSkateSettings {
             $prop = $json.PSObject.Properties[$key]
             if ($prop) { $settings[$key] = [bool]$prop.Value }
         }
+        $allowed = $json.PSObject.Properties["allowed"]
+        if ($allowed) { $settings.allowed = @($allowed.Value | ForEach-Object { [string]$_ }) }
     }
     catch {}
     return $settings
@@ -685,8 +764,75 @@ function Get-ReSkateSettings {
 
 function Save-ReSkateSettings {
     param($Settings)
-    $payload = @{ reskate = [bool]$Settings.reskate; mods = [bool]$Settings.mods }
+    $payload = [ordered]@{
+        reskate = [bool]$Settings.reskate
+        mods    = [bool]$Settings.mods
+        allowed = @($Settings.allowed)
+    }
     $payload | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RepoRoot "ReSkate.settings.json") -Encoding UTF8
+}
+
+function Test-PathAllowed {
+    param([string]$Folder)
+    if ([string]::IsNullOrWhiteSpace($Folder)) { return $true }
+    $full = [System.IO.Path]::GetFullPath($Folder).TrimEnd("\")
+    foreach ($item in @((Get-ReSkateSettings).allowed)) {
+        if (-not $item) { continue }
+        $have = [System.IO.Path]::GetFullPath([string]$item).TrimEnd("\")
+        if ($have -ieq $full) { return $true }
+    }
+    return $false
+}
+
+function Request-DefenderAllow {
+    param([string[]]$Paths)
+    if (-not (Get-Command Get-MpPreference -ErrorAction SilentlyContinue)) { return }
+    $need = New-Object System.Collections.Generic.List[string]
+    foreach ($folder in @($Paths)) {
+        if ($folder -and -not (Test-PathAllowed $folder)) { [void]$need.Add($folder) }
+    }
+    if ($need.Count -eq 0) { return }
+    $allow = Join-Path $RepoRoot "Source\Setup\Allow.ps1"
+    $cmd = "-NoProfile -ExecutionPolicy Bypass -File `"$allow`" -RepoRoot `"$RepoRoot`""
+    foreach ($folder in $need) { $cmd += " -Path `"$folder`"" }
+    try {
+        $proc = Start-Process `
+            -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -ArgumentList $cmd `
+            -Wait `
+            -PassThru
+        $code = 1
+        if ($null -ne $proc -and $null -ne $proc.ExitCode) { $code = $proc.ExitCode }
+        if ($code -eq 0 -or $code -eq 2 -or $code -eq 1223) { return }
+        throw "Windows antivirus exclusion was not added."
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Press Yes on the Windows prompt so ReSkate is allowed through antivirus.`r`nYou can also run ReSkate.bat allow.",
+            "ReSkate"
+        ) | Out-Null
+    }
+}
+
+function Select-GameFolder {
+    param([IntPtr]$Owner, [string]$Start)
+    try {
+        return [ExplorerFolder]::Pick($Owner, "Select the folder that contains Skate.exe", $Start)
+    }
+    catch {
+        $dialog = New-Object System.Windows.Forms.OpenFileDialog
+        $dialog.Title = "Open the folder that contains Skate.exe"
+        $dialog.Filter = "Skate (Skate.exe)|Skate.exe|All files (*.*)|*.*"
+        $dialog.FileName = "Skate.exe"
+        $dialog.CheckFileExists = $false
+        $dialog.CheckPathExists = $true
+        $dialog.ValidateNames = $false
+        if ($Start -and (Test-Path -LiteralPath $Start)) { $dialog.InitialDirectory = $Start }
+        if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+        $chosen = $dialog.FileName
+        if (Test-Path -LiteralPath $chosen -PathType Container) { return $chosen }
+        return (Split-Path -Parent $chosen)
+    }
 }
 
 function Start-ReSkateUpdate {
@@ -882,24 +1028,31 @@ $pathBox.Add_SelectedIndexChanged({
 
 $browse.Add_Click({
     try {
-        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dialog.Description = "Folder that contains Skate.exe"
-        if ($dialog.ShowDialog() -eq "OK") {
-            $Script:SkateRoot = $dialog.SelectedPath
-            if (-not $pathBox.Items.Contains($Script:SkateRoot)) { [void]$pathBox.Items.Add($Script:SkateRoot) }
-            $pathBox.SelectedItem = $Script:SkateRoot
-        }
+        $start = $Script:SkateRoot
+        if (-not $start -and $pathBox.SelectedItem) { $start = [string]$pathBox.SelectedItem }
+        $picked = Select-GameFolder -Owner $form.Handle -Start $start
+        if (-not $picked) { return }
+        $Script:SkateRoot = [System.IO.Path]::GetFullPath($picked)
+        if (-not $pathBox.Items.Contains($Script:SkateRoot)) { [void]$pathBox.Items.Add($Script:SkateRoot) }
+        $pathBox.SelectedItem = $Script:SkateRoot
+        Request-DefenderAllow -Paths @($Script:SkateRoot)
     }
     catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "ReSkate") | Out-Null }
 })
 
 $form.Add_HandleCreated({ try { [UiCaption]::Apply($form.Handle) } catch {} })
+$Script:FoundRoots = @()
 $form.Add_Shown({
     try { [UiCaption]::Apply($form.Handle) } catch {}
-    $found = @(Find-SkateRoots)
-    foreach ($hit in $found) { [void]$pathBox.Items.Add($hit) }
+    foreach ($hit in @($Script:FoundRoots)) { [void]$pathBox.Items.Add($hit) }
     if ($pathBox.Items.Count -gt 0) { $pathBox.SelectedIndex = 0 }
     if ($autoBox.Checked) { Start-ReSkateUpdate }
 })
+
+$Script:FoundRoots = @(Find-SkateRoots)
+$allowPaths = New-Object System.Collections.Generic.List[string]
+[void]$allowPaths.Add($RepoRoot)
+foreach ($hit in @($Script:FoundRoots)) { [void]$allowPaths.Add($hit) }
+Request-DefenderAllow -Paths $allowPaths.ToArray()
 
 [void]$form.ShowDialog()

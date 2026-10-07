@@ -51,7 +51,7 @@ After install, the game folder beside `Skate.exe` contains `ReSkateLauncher.exe`
 
 ## Quick Start
 
-Double-click `ReSkate.bat`. The startup screen shows two cards. Wordmarks are in `Assets\Logos` and the card and window photos are in `Assets\Backgrounds`. The ReSkate card and the Skate card each switch the parked files, then start that game. Update, Mods, and Check sit under the cards.
+Double-click `ReSkate.bat`. The first start asks you to press Yes so Windows Security excludes this launcher folder and the Skate folder, including ReSkateLauncher. `ReSkate.bat allow` does that same approval on its own. The startup screen shows two cards. Folder opens an Explorer window. Pick the folder that contains `Skate.exe` and press Open. Wordmarks are in `Assets\Logos` and the card and window photos are in `Assets\Backgrounds`. The ReSkate card and the Skate card each switch the parked files, then start that game. Update, Mods, and Check sit under the cards.
 
 Update installs the latest release. Auto-update on the card screen checks that release in the background. Mods opens on Recommended: Skate 2, Skate 3, Skater XL, Other, Maps, and Audio. Browse lists the ReSkate catalog for Mods or Modpacks, ordered last updated, newest, most downloaded, or top rated. A search keeps that filter and puts your words in the query. A checked package is extracted into its own folder, `Mods\<Author-Name>`, beside `Skate.exe`. Back returns to the game cards. Profiles saves that Mods folder into `Profiles\<name>`. Auto-update on the mods screen replaces an installed package when Thunderstore has a newer version. Enable the mod in the in-game ReSkate MODS menu.
 
